@@ -1,0 +1,42 @@
+{
+  "name": "syia-mcp-utils",
+  "version": "1.0.7",
+  "description": "Global utility functions for purchase MCP server",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "npm run bump:patch && tsc",
+    "build-only": "tsc",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "version:patch": "npm version patch",
+    "version:minor": "npm version minor",
+    "version:major": "npm version major",
+    "bump:patch": "node scripts/version-bump.js patch",
+    "bump:minor": "node scripts/version-bump.js minor",
+    "bump:major": "node scripts/version-bump.js major",
+    "prepublish": "npm run build-only",
+    "publish:patch": "npm run bump:patch && npm publish",
+    "publish:minor": "npm run bump:minor && npm publish",
+    "publish:major": "npm run bump:major && npm publish"
+  },
+  "keywords": [
+    "utils",
+    "utilities",
+    "global"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "openai": "^4.0.0",
+    "axios": "^1.0.0",
+    "winston": "^3.0.0",
+    "mongodb": "^5.0.0",
+    "typesense": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "dotenv": "^16.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
+  }
+}
