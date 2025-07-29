@@ -278,4 +278,23 @@ export interface Config {
     baseUrl?: string;
     snapshotUrl?: string;
     jwtToken?: string;
+    
+    // MongoDB connection variants - support multiple naming formats
+    secondaryMongoUri?: string;
+    devApiMongoUri?: string;
+    etlDevMongoUri?: string;
+    etlDevDataUri?: string;
+    mongodbEtlDevDataUri?: string;
+    
+    // Database name variants
+    dbName?: string;
+    secondaryDbName?: string;
+    etlDevDataDbName?: string;
+    devApiDbName?: string;
+    etlDevDbName?: string;
+    mongodbEtlDevDataDbName?: string;
+    
+    // Other optional configs
+    companyName?: string;
+    cohereApiKey?: string;
 } 

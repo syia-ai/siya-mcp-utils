@@ -1,10 +1,12 @@
-let _config: any = null;
+import { Config } from './types/index';
 
-export function setConfig(config: any) {
+let _config: Config | null = null;
+
+export function setConfig(config: Config) {
   _config = config;
 }
 
-export function getConfig() {
+export function getConfig(): Config {
   if (!_config) {
     throw new Error("Config not set. Call setConfig(config) in server startup.");
   }

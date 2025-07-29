@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { logger } from "./logger.js";
+import { logger } from "./logger";
 import axios from 'axios';
 
 interface LLMResponse {

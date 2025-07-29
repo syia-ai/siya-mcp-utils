@@ -1,16 +1,32 @@
-import { getEtlDevClient } from "./mongodb.js";
-import { getEtlDevDbName } from "./mongodb.js";
-import { logger } from "./logger.js";
-import { ToolArguments, ToolResponse } from "./types/index.js";
-import { getMongoClient } from "./mongodb.js";
+import { getMongoDatabase } from "./mongodb";
+import { logger } from "./logger";
+import { ToolArguments, ToolResponse } from "./types/index";
 import { getConfig } from "./config";
 import { TextContent } from "@modelcontextprotocol/sdk/types.js";
-import { getCompanyImoNumbers } from "./imoUtils.js";
+import { getCompanyImoNumbers } from "./imoUtils";
+import { getTypesenseClient, TypesenseConfig } from "./typesense";
+
+/**
+ * Helper function to get Typesense client using configuration
+ */
+export async function getConfiguredTypesenseClient(connectionName: string = 'default') {
+    const config = getConfig();
+    const typesenseConfig: TypesenseConfig = {
+        host: config.typesenseHost,
+        port: config.typesensePort,
+        protocol: config.typesenseProtocol,
+        apiKey: config.typesenseApiKey
+    };
+    return getTypesenseClient(typesenseConfig, connectionName);
+}
 
 export async function fetchQADetails(imo: string, qaId: number): Promise<any> {
+    if (!imo || !qaId) {
+        throw new Error('IMO and qaId are required parameters');
+    }
     try {
-        const client = await getEtlDevClient();
-        const db = client.db(getEtlDevDbName());
+        const config = getConfig();
+        const db = await getMongoDatabase(config.etlDevMongoUri!, config.etlDevDbName!, 'etl-dev');
         const vesselinfos = db.collection('vesselinfos');
 
         const query = {
@@ -85,8 +101,8 @@ export async function getComponentData(componentId: string): Promise<string> {
     const componentNo = `${componentNumber}_${questionNumber}_${imo}`;
 
     try {
-        const client = await getEtlDevClient();
-        const db = client.db(getEtlDevDbName());
+        const config = getConfig();
+        const db = await getMongoDatabase(config.etlDevMongoUri!, config.etlDevDbName!, 'etl-dev');
         const collection = db.collection('vesselinfocomponents');
 
         const doc = await collection.findOne({ componentNo });
@@ -219,8 +235,8 @@ export async function getVesselQnASnapshotHandler(arguments_: ToolArguments): Pr
 
 export async function insertDataLinkToMongoDB(link: string, type: string, sessionId: string, imo: string, vesselName: string): Promise<void> {
     try {
-        const mongoClient = await getMongoClient();
-        const db = mongoClient.db(getConfig().dbName);
+        const config = getConfig();
+        const db = await getMongoDatabase(config.mongoUri, config.mongoDbName, 'primary');
         await db.collection('data_links').insertOne({
             link,
             type,
@@ -318,8 +334,11 @@ export async function convertUnixDates(document: any): Promise<any> {
 export async function getDataLink(data: any[]): Promise<string> {
     try {
         const config = getConfig();
-        const raw_url = config.snapshotUrl
-        const url = raw_url;
+        const url = config.snapshotUrl;
+        
+        if (!url) {
+            throw new Error('snapshotUrl is not configured');
+        }
 
         const raw_jwtToken = config.jwtToken
         const headers = {
@@ -564,17 +583,10 @@ export async function formatTypesenseResults(
         // Get artifact data
         const artifactData = await getArtifact(toolName, dataLink);
 
-        const testing_json : any = {
-            found: searchResult.found || 0,
-            out_of: searchResult.out_of || 0,
-            page: searchResult.page || 1,
-            hits: "testing"
-        }
-
         // Create content response
         const content: TextContent = {
             type: "text",
-            text: JSON.stringify(testing_json, null, 2),
+            text: JSON.stringify(formattedResults, null, 2),
             title,
             format: "json"
         };

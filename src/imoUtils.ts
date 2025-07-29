@@ -1,5 +1,6 @@
-import { logger } from './logger.js';
-import { getEtlDevDataClient, getEtlDevDataDbName } from './mongodb.js';
+import { logger } from './logger';
+import { getMongoDatabase } from './mongodb';
+import { getConfig } from './config';
 
 // Store IMO numbers for the company
 let companyImoNumbers: string[] = [];
@@ -10,12 +11,15 @@ let companyImoNumbers: string[] = [];
  * @returns Array of IMO numbers as strings
  */
 export async function fetchCompanyImoNumbers(companyName: string): Promise<string[]> {
+  if (!companyName) {
+    throw new Error('Company name is required');
+  }
   try {
     logger.info(`Fetching IMO numbers for company: ${companyName}`);
     
-    // Get ETL Dev MongoDB client
-    const client = await getEtlDevDataClient();
-    const db = client.db(getEtlDevDataDbName());
+    // Get ETL Dev MongoDB database
+    const config = getConfig();
+    const db = await getMongoDatabase(config.etlDevDataUri!, config.etlDevDataDbName!, 'etl-dev-data');
     
     // Query the common_group_details collection for IMO numbers belonging to the company
     const collection = db.collection('common_group_details');

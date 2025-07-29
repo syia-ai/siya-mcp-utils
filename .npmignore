@@ -1,0 +1,46 @@
+# Source files
+src/
+
+# Tests
+test/
+tests/
+__tests__/
+*.spec.ts
+*.test.ts
+
+# Configuration files
+tsconfig.json
+.eslintrc*
+.prettierrc*
+.babelrc*
+jest.config.js
+.editorconfig
+
+# Git related
+.git/
+.gitignore
+.github/
+
+# CI/CD
+.travis.yml
+.gitlab-ci.yml
+.circleci/
+azure-pipelines.yml
+
+# Scripts
+scripts/
+
+# Misc
+.vscode/
+.idea/
+*.log
+.DS_Store
+.env*
+coverage/
+docs/
+examples/
+.npmrc
+
+# Don't ignore dist folder as it contains the compiled output
+# that should be published to npm
+!dist/ 
