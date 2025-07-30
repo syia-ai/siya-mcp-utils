@@ -1295,8 +1295,8 @@ export async function getFleetImoByName(fleetName: string): Promise<number | nul
  * @returns Promise<number[]> - Array of vessel IMO numbers
  */
 export async function getVesselImoListFromFleet(fleetImo: number): Promise<number[]> {
-  const mongoUri = getConfig().mongodbEtlDevDataUri || "mongodb://sabareesh:1ji9CYfkS6rD@db.syia.ai/?authSource=syia-etl-dev";
-  const dbName = getConfig().mongodbEtlDevDataDbName || "syia-etl-dev";
+  const mongoUri = getConfig().mongodbEtlDevDataUri;
+  const dbName = getConfig().mongodbEtlDevDataDbName;
   
   if (!mongoUri || !dbName) {
     throw new Error('ETL database URI and name are required for fleet operations');
