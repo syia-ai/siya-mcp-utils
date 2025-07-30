@@ -1,6 +1,6 @@
 # syia-mcp-utils
 
-Global utility functions for purchase MCP server.
+Global utility functions for purchase and PMS MCP servers.
 
 ## Installation
 
@@ -15,7 +15,10 @@ import {
   fetchQADetails, 
   getComponentData, 
   logger,
-  getMongoClient 
+  getMongoClient,
+  filterResponseByCompanyImos,
+  markdownToHtmlLink,
+  parseDocumentLink
 } from 'syia-mcp-utils';
 ```
 
@@ -28,6 +31,9 @@ import {
 - **llm.ts** - OpenAI LLM integration
 - **helper_functions.ts** - General helper functions
 - **config.ts** - Configuration management
+- **responseFilter.ts** - Company-specific response filtering
+- **markdown.ts** - Markdown to HTML conversion
+- **documentParser.ts** - Document link parsing
 
 ## Building
 

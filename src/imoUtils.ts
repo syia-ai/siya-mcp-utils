@@ -1,5 +1,6 @@
 import { logger } from './logger.js';
 import { getEtlDevDataClient, getEtlDevDataDbName } from './mongodb.js';
+import { getConfig } from './config.js';
 
 // Store IMO numbers for the company
 let companyImoNumbers: string[] = [];
@@ -54,4 +55,46 @@ export async function fetchCompanyImoNumbers(companyName: string): Promise<strin
  */
 export function getCompanyImoNumbers(): string[] {
   return companyImoNumbers;
+}
+
+/**
+ * Check if IMO filtering should be bypassed for admin companies
+ * @param companyName - Name of the company to check
+ * @returns True if filtering should be bypassed
+ */
+export function shouldBypassImoFiltering(companyName: string): boolean {
+  const adminCompanies = ['admin', 'administrator', 'superadmin', 'syia'];
+  return adminCompanies.some(admin => 
+    companyName.toLowerCase().includes(admin.toLowerCase())
+  );
+}
+
+/**
+ * Validate if an IMO number is valid for the current company
+ * @param imoNumber - IMO number to validate (string or number)
+ * @param companyName - Optional company name for additional validation
+ * @returns Object with validation result and error message
+ */
+export function isValidImoForCompany(imoNumber: string | number): boolean {
+  try {
+    // Convert to string for consistent comparison
+    const imoStr = String(imoNumber);
+    
+    // Basic IMO number validation (7 digits)
+    if (!/^\d{7}$/.test(imoStr)) {
+      return false;
+    }
+    
+    // Check if IMO is in company's authorized list
+    const companyImos = getCompanyImoNumbers();
+    if (companyImos.length === 0) {
+      // If no company IMOs are set, allow all valid IMO numbers
+      return true;
+    }
+    
+    return companyImos.includes(imoStr);
+  } catch (error) {
+    logger.error('Error validating IMO number:', error);
+    return false;
+  }
 } 

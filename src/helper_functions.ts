@@ -5,7 +5,8 @@ import { ToolArguments, ToolResponse } from "./types/index.js";
 import { getMongoClient } from "./mongodb.js";
 import { getConfig } from "./config";
 import { TextContent } from "@modelcontextprotocol/sdk/types.js";
-import { getCompanyImoNumbers } from "./imoUtils.js";
+import { getCompanyImoNumbers, shouldBypassImoFiltering } from "./imoUtils.js";
+import { getTypesenseClient } from "./typesense.js";
 
 export async function fetchQADetails(imo: string, qaId: number): Promise<any> {
     try {
@@ -681,4 +682,729 @@ export async function updateTypesenseFilterWithCompanyImos(filter: string): Prom
         }
     }
     return filter;
+}
+
+// PMS Helper Functions
+// ===================
+
+interface CasefileData {
+    sessionId: string;
+    imo: string;
+    vesselName: string;
+    links: { link: any; linkHeader: string }[];
+    datetime: string;
+}
+
+/**
+ * Get data link from documents for PMS
+ */
+export async function getPmsDataLink(data: any[]): Promise<string | null> {
+    const url = 'https://dev-api.siya.com/v1.0/vessel-info/qna-snapshot';
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRhIjp7ImlkIjoiNjRkMzdhMDM1Mjk5YjFlMDQxOTFmOTJhIiwiZmlyc3ROYW1lIjoiU3lpYSIsImxhc3ROYW1lIjoiRGV2IiwiZW1haWwiOiJkZXZAc3lpYS5haSIsInJvbGUiOiJhZG1pbiIsInJvbGVJZCI6IjVmNGUyODFkZDE4MjM0MzY4NDE1ZjViZiIsImlhdCI6MTc0MDgwODg2OH0sImlhdCI6MTc0MDgwODg2OCwiZXhwIjoxNzcyMzQ0ODY4fQ.1grxEO0aO7wfkSNDzpLMHXFYuXjaA1bBguw2SJS9r2M'
+    };
+  
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify({ data })
+      });
+  
+      const result = await response.json() as { status: string; resultData?: string };
+  
+      if (result.status === 'OK') {
+        return result.resultData || null;
+      } else {
+        return null;
+      }
+    } catch (error) {
+      logger.error('Error fetching PMS data link:', error);
+      return null;
+    }
+}
+
+/**
+ * Insert data link to MongoDB for PMS
+ */
+export async function insertPmsDataLinkToMongodb(
+    dataLink: string, 
+    linkHeader: string, 
+    sessionId: string, 
+    imo?: string, 
+    vesselName?: string
+): Promise<void> {
+    try {
+        const mongoClient = await getMongoClient();
+        const db = mongoClient.db(getConfig().dbName);
+        const collection = db.collection<CasefileData>('casefile_data');
+        
+        const sessionExists = await collection.findOne({ sessionId });
+
+        const linkData = {
+          link: dataLink,
+          linkHeader: linkHeader
+        };
+    
+        if (sessionExists) {
+          await collection.updateOne(
+            { sessionId },
+            {
+              $push: {
+                links: {
+                  $each: [linkData]
+                }
+              },
+              $set: {
+                datetime: new Date().toISOString()
+              }
+            }
+          );
+        } else {
+            const newEntry: CasefileData = {
+                sessionId,
+                imo: imo ?? "",
+                vesselName: vesselName ?? "",
+                links: [linkData],
+                datetime: new Date().toISOString(),
+            };
+            await collection.insertOne(newEntry);
+        }
+    } catch (error) {
+        logger.error('Error inserting PMS data link to MongoDB:', error);
+    }
+}
+
+/**
+ * Update Typesense filter with company IMO numbers for filtering (PMS version)
+ * @param filter - Existing filter string
+ * @returns Updated filter string with IMO restrictions
+ */
+export function updateTypesenseFilterWithCompanyImosPms(filter: string): string {
+    const companyName = getConfig().companyName;
+    
+    // Skip filtering for admin companies
+    if (!companyName || shouldBypassImoFiltering(companyName)) {
+        logger.debug(`Skipping Typesense IMO filtering for admin company: ${companyName}`);
+        return filter;
+    }
+    
+    const companyImos = getCompanyImoNumbers();
+    
+    // If no IMO numbers configured, return original filter
+    if (companyImos.length === 0) {
+        logger.warn('No company IMO numbers configured. Skipping Typesense IMO filtering.');
+        return filter;
+    }
+    
+    // Create IMO filter for Typesense
+    const imoFilter = `imo:[${companyImos.join(",")}]`;
+    
+    // Combine with existing filter
+    if (filter && filter.trim()) {
+        const combinedFilter = `${filter} && ${imoFilter}`;
+        logger.debug(`Applied Typesense IMO filter: ${combinedFilter}`);
+        return combinedFilter;
+    } else {
+        logger.debug(`Applied Typesense IMO filter: ${imoFilter}`);
+        return imoFilter;
+    }
+}
+
+/**
+ * Update MongoDB filter with company IMO numbers for filtering (PMS version)
+ * @param filter - Existing MongoDB filter object
+ * @returns Updated filter object with IMO restrictions
+ */
+export function updateMongoFilterWithCompanyImos(filter: any): any {
+    const companyName = getConfig().companyName;
+    
+    // Skip filtering for admin companies
+    if (!companyName || shouldBypassImoFiltering(companyName)) {
+        logger.debug(`Skipping MongoDB IMO filtering for admin company: ${companyName}`);
+        return filter;
+    }
+    
+    const companyImos = getCompanyImoNumbers();
+    
+    // If no IMO numbers configured, return original filter
+    if (companyImos.length === 0) {
+        logger.warn('No company IMO numbers configured. Skipping MongoDB IMO filtering.');
+        return filter;
+    }
+    
+    // Create a copy of the filter to avoid modifying the original
+    const updatedFilter = { ...filter };
+    
+    // Convert IMO numbers to integers for MongoDB query
+    const imoNumbers = companyImos.map(imo => Number(imo));
+    
+    // Add IMO restriction to the filter
+    updatedFilter.imo = { $in: imoNumbers };
+    
+    logger.debug(`Applied MongoDB IMO filter: ${JSON.stringify(updatedFilter)}`);
+    return updatedFilter;
+}
+
+/**
+ * Update MongoDB aggregation pipeline with company IMO numbers for filtering (PMS version)
+ * @param pipeline - Existing MongoDB aggregation pipeline
+ * @returns Updated pipeline with IMO restrictions
+ */
+export function updateMongoAggregationWithCompanyImos(pipeline: any[]): any[] {
+    const companyName = getConfig().companyName;
+    
+    // Skip filtering for admin companies
+    if (!companyName || shouldBypassImoFiltering(companyName)) {
+        logger.debug(`Skipping MongoDB aggregation IMO filtering for admin company: ${companyName}`);
+        return pipeline;
+    }
+    
+    const companyImos = getCompanyImoNumbers();
+    
+    // If no IMO numbers configured, return original pipeline
+    if (companyImos.length === 0) {
+        logger.warn('No company IMO numbers configured. Skipping MongoDB aggregation IMO filtering.');
+        return pipeline;
+    }
+    
+    // Convert IMO numbers to integers for MongoDB query
+    const imoNumbers = companyImos.map(imo => Number(imo));
+    
+    // Create IMO match stage
+    const imoMatchStage = {
+        $match: {
+            imo: { $in: imoNumbers }
+        }
+    };
+    
+    // Add IMO filter as the first stage in the pipeline
+    const updatedPipeline = [imoMatchStage, ...pipeline];
+    
+    logger.debug(`Applied MongoDB aggregation IMO filter: ${JSON.stringify(imoMatchStage)}`);
+    return updatedPipeline;
+}
+
+/**
+ * Update search query parameters with company IMO filtering (PMS version)
+ * @param searchParams - Search parameters object
+ * @returns Updated search parameters with IMO restrictions
+ */
+export function updateSearchParamsWithCompanyImos(searchParams: any): any {
+    const companyName = getConfig().companyName;
+    
+    // Skip filtering for admin companies
+    if (!companyName || shouldBypassImoFiltering(companyName)) {
+        logger.debug(`Skipping search params IMO filtering for admin company: ${companyName}`);
+        return searchParams;
+    }
+    
+    const companyImos = getCompanyImoNumbers();
+    
+    // If no IMO numbers configured, return original params
+    if (companyImos.length === 0) {
+        logger.warn('No company IMO numbers configured. Skipping search params IMO filtering.');
+        return searchParams;
+    }
+    
+    // Create a copy of the search params
+    const updatedParams = { ...searchParams };
+    
+    // Update filter_by parameter for Typesense
+    if (updatedParams.filter_by) {
+        updatedParams.filter_by = updateTypesenseFilterWithCompanyImosPms(updatedParams.filter_by);
+    } else {
+        updatedParams.filter_by = updateTypesenseFilterWithCompanyImosPms('');
+    }
+    
+    logger.debug(`Updated search params with IMO filtering: ${JSON.stringify(updatedParams)}`);
+    return updatedParams;
+}
+
+/**
+ * Check if a vessel IMO is authorized for the current company (PMS version)
+ * @param imo - IMO number to check
+ * @returns True if authorized, false otherwise
+ */
+export function isVesselAuthorizedForCompany(imo: string | number): boolean {
+    const companyName = getConfig().companyName;
+    
+    // Allow access for admin companies
+    if (!companyName || shouldBypassImoFiltering(companyName)) {
+        return true;
+    }
+    
+    const companyImos = getCompanyImoNumbers();
+    
+    // If no IMO numbers configured, deny access
+    if (companyImos.length === 0) {
+        return false;
+    }
+    
+    const imoNumber = Number(imo);
+    const companyImoNumbers = companyImos.map(imo => Number(imo));
+    
+    return companyImoNumbers.includes(imoNumber);
+}
+
+/**
+ * Get authorized IMO numbers for the current company (PMS version)
+ * @returns Array of authorized IMO numbers
+ */
+export function getAuthorizedImoNumbers(): string[] {
+    const companyName = getConfig().companyName;
+    
+    // For admin companies, return empty array (no restrictions)
+    if (!companyName || shouldBypassImoFiltering(companyName)) {
+        return [];
+    }
+    
+    return getCompanyImoNumbers();
+}
+
+/**
+ * Log IMO filtering activity for monitoring (PMS version)
+ * @param action - Action being performed
+ * @param details - Additional details about the filtering
+ */
+export function logImoFilteringActivity(action: string, details: any = {}): void {
+    const companyName = getConfig().companyName;
+    const companyImos = getCompanyImoNumbers();
+    
+    logger.info(`IMO filtering activity: ${action}`, {
+        companyName,
+        companyImoCount: companyImos.length,
+        isAdminCompany: companyName ? shouldBypassImoFiltering(companyName) : false,
+        ...details
+    });
+}
+
+/**
+ * Get database instance for PMS (wrapper for MongoDB client)
+ */
+export async function getPmsDatabase() {
+    const client = await getMongoClient();
+    return client.db(getConfig().dbName);
+}
+
+/**
+ * Get ETL database instance for PMS
+ */
+export async function getPmsEtlDatabase() {
+    const client = await getEtlDevClient();
+    return client.db(getEtlDevDbName());
+}
+
+/**
+ * Get engine data database instance for PMS
+ */
+export async function getPmsEngineDataDatabase() {
+    const client = await getMongoClient();
+    return client.db(getConfig().secondaryDbName || getConfig().dbName);
+}
+
+// Defect Inspection Helper Functions
+// =================================
+
+/**
+ * Get database instance for Defect Inspection (wrapper for MongoDB client)
+ */
+export async function getDefectDatabase() {
+    const client = await getMongoClient();
+    return client.db(getConfig().dbName);
+}
+
+/**
+ * Get secondary database instance for Defect Inspection
+ */
+export async function getDefectSecondaryDatabase() {
+    const client = await getMongoClient();
+    return client.db(getConfig().secondaryDbName || getConfig().dbName);
+}
+
+/**
+ * Update Typesense filter with company IMO numbers for filtering (Defect version)
+ * @param filter - Existing filter string
+ * @returns Updated filter string with IMO restrictions
+ */
+export function updateTypesenseFilterWithCompanyImosDefect(filter: string): string {
+    const companyName = getConfig().companyName;
+    
+    // Skip filtering for admin companies
+    if (!companyName || shouldBypassImoFiltering(companyName)) {
+        logger.debug(`Skipping Typesense IMO filtering for admin company: ${companyName}`);
+        return filter;
+    }
+    
+    const companyImos = getCompanyImoNumbers();
+    
+    // If no IMO numbers configured, return original filter
+    if (companyImos.length === 0) {
+        logger.warn('No company IMO numbers configured. Skipping Typesense IMO filtering.');
+        return filter;
+    }
+    
+    // Create IMO filter for Typesense
+    const imoFilter = `imo:[${companyImos.join(",")}]`;
+    
+    // Combine with existing filter
+    if (filter && filter.trim()) {
+        const combinedFilter = `${filter} && ${imoFilter}`;
+        logger.debug(`Applied Typesense IMO filter: ${combinedFilter}`);
+        return combinedFilter;
+    } else {
+        logger.debug(`Applied Typesense IMO filter: ${imoFilter}`);
+        return imoFilter;
+    }
+}
+
+/**
+ * Update MongoDB filter with company IMO numbers for filtering (Defect version)
+ * @param filter - Existing MongoDB filter object
+ * @returns Updated filter object with IMO restrictions
+ */
+export function updateMongoFilterWithCompanyImosDefect(filter: any): any {
+    const companyName = getConfig().companyName;
+    
+    // Skip filtering for admin companies
+    if (!companyName || shouldBypassImoFiltering(companyName)) {
+        logger.debug(`Skipping MongoDB IMO filtering for admin company: ${companyName}`);
+        return filter;
+    }
+    
+    const companyImos = getCompanyImoNumbers();
+    
+    // If no IMO numbers configured, return original filter
+    if (companyImos.length === 0) {
+        logger.warn('No company IMO numbers configured. Skipping MongoDB IMO filtering.');
+        return filter;
+    }
+    
+    // Create a copy of the filter to avoid modifying the original
+    const updatedFilter = { ...filter };
+    
+    // Convert IMO numbers to integers for MongoDB query
+    const imoNumbers = companyImos.map(imo => Number(imo));
+    
+    // Add IMO restriction to the filter
+    updatedFilter.imo = { $in: imoNumbers };
+    
+    logger.debug(`Applied MongoDB IMO filter: ${JSON.stringify(updatedFilter)}`);
+    return updatedFilter;
+}
+
+/**
+ * Update MongoDB aggregation pipeline with company IMO numbers for filtering (Defect version)
+ * @param pipeline - Existing MongoDB aggregation pipeline
+ * @returns Updated pipeline with IMO restrictions
+ */
+export function updateMongoAggregationWithCompanyImosDefect(pipeline: any[]): any[] {
+    const companyName = getConfig().companyName;
+    
+    // Skip filtering for admin companies
+    if (!companyName || shouldBypassImoFiltering(companyName)) {
+        logger.debug(`Skipping MongoDB aggregation IMO filtering for admin company: ${companyName}`);
+        return pipeline;
+    }
+    
+    const companyImos = getCompanyImoNumbers();
+    
+    // If no IMO numbers configured, return original pipeline
+    if (companyImos.length === 0) {
+        logger.warn('No company IMO numbers configured. Skipping MongoDB aggregation IMO filtering.');
+        return pipeline;
+    }
+    
+    // Convert IMO numbers to integers for MongoDB query
+    const imoNumbers = companyImos.map(imo => Number(imo));
+    
+    // Create IMO match stage
+    const imoMatchStage = {
+        $match: {
+            imo: { $in: imoNumbers }
+        }
+    };
+    
+    // Add IMO filter as the first stage in the pipeline
+    const updatedPipeline = [imoMatchStage, ...pipeline];
+    
+    logger.debug(`Applied MongoDB aggregation IMO filter: ${JSON.stringify(imoMatchStage)}`);
+    return updatedPipeline;
+}
+
+/**
+ * Update search query parameters with company IMO filtering (Defect version)
+ * @param searchParams - Search parameters object
+ * @returns Updated search parameters with IMO restrictions
+ */
+export function updateSearchParamsWithCompanyImosDefect(searchParams: any): any {
+    const companyName = getConfig().companyName;
+    
+    // Skip filtering for admin companies
+    if (!companyName || shouldBypassImoFiltering(companyName)) {
+        logger.debug(`Skipping search params IMO filtering for admin company: ${companyName}`);
+        return searchParams;
+    }
+    
+    const companyImos = getCompanyImoNumbers();
+    
+    // If no IMO numbers configured, return original params
+    if (companyImos.length === 0) {
+        logger.warn('No company IMO numbers configured. Skipping search params IMO filtering.');
+        return searchParams;
+    }
+    
+    // Create a copy of the search params
+    const updatedParams = { ...searchParams };
+    
+    // Update filter_by parameter for Typesense
+    if (updatedParams.filter_by) {
+        updatedParams.filter_by = updateTypesenseFilterWithCompanyImosDefect(updatedParams.filter_by);
+    } else {
+        updatedParams.filter_by = updateTypesenseFilterWithCompanyImosDefect('');
+    }
+    
+    logger.debug(`Updated search params with IMO filtering: ${JSON.stringify(updatedParams)}`);
+    return updatedParams;
+}
+
+/**
+ * Check if a vessel IMO is authorized for the current company (Defect version)
+ * @param imo - IMO number to check
+ * @returns True if authorized, false otherwise
+ */
+export function isVesselAuthorizedForCompanyDefect(imo: string | number): boolean {
+    const companyName = getConfig().companyName;
+    
+    // Allow access for admin companies
+    if (!companyName || shouldBypassImoFiltering(companyName)) {
+        return true;
+    }
+    
+    const companyImos = getCompanyImoNumbers();
+    
+    // If no IMO numbers configured, deny access
+    if (companyImos.length === 0) {
+        return false;
+    }
+    
+    const imoNumber = Number(imo);
+    const companyImoNumbers = companyImos.map(imo => Number(imo));
+    
+    return companyImoNumbers.includes(imoNumber);
+}
+
+/**
+ * Get authorized IMO numbers for the current company (Defect version)
+ * @returns Array of authorized IMO numbers
+ */
+export function getAuthorizedImoNumbersDefect(): string[] {
+    const companyName = getConfig().companyName;
+    
+    // For admin companies, return empty array (no restrictions)
+    if (!companyName || shouldBypassImoFiltering(companyName)) {
+        return [];
+    }
+    
+    return getCompanyImoNumbers();
+}
+
+/**
+ * Log IMO filtering activity for monitoring (Defect version)
+ * @param action - Action being performed
+ * @param details - Additional details about the filtering
+ */
+export function logImoFilteringActivityDefect(action: string, details: any = {}): void {
+    const companyName = getConfig().companyName;
+    const companyImos = getCompanyImoNumbers();
+    
+    logger.info(`IMO filtering activity: ${action}`, {
+        companyName,
+        companyImoCount: companyImos.length,
+        isAdminCompany: companyName ? shouldBypassImoFiltering(companyName) : false,
+        ...details
+    });
+}
+
+// Additional Defect-Specific Functions
+// ===================================
+
+/**
+ * Convert defect dates from Unix timestamps to readable format
+ * @param document - Document with date fields
+ * @returns Document with converted dates
+ */
+export function convertDefectDates(document: Record<string, any>): Record<string, any> {
+    const result = { ...document };
+    
+    const dateFields = [
+        "inspectionTargetDate",
+        "reportDate", 
+        "closingDate",
+        "targetDate",
+        "nextDueDate",
+        "extendedDate"
+    ];
+
+    for (const field of dateFields) {
+        const value = result[field];
+        if (typeof value === "number" && Number.isFinite(value)) {
+            try {
+                result[field] = new Date(value * 1000).toISOString().replace('T', ' ').substring(0, 19);
+            } catch (error) {
+                // Keep original value if conversion fails
+            }
+        }
+    }
+
+    return result;
+}
+
+/**
+ * Get fleet IMO by fleet name
+ * @param fleetName - Name of the fleet
+ * @returns Fleet IMO number or null
+ */
+export async function getFleetImoByName(fleetName: string): Promise<number | null> {
+    try {
+        const client = await getMongoClient();
+        const db = client.db(getConfig().dbName);
+        const collection = db.collection('fleets');
+        
+        const result = await collection.findOne(
+            { fleetName: fleetName },
+            { projection: { imo: 1, _id: 0 } }
+        );
+        
+        return result ? result.imo : null;
+    } catch (error) {
+        logger.error(`Error getting fleet IMO for fleet name ${fleetName}:`, error);
+        return null;
+    }
+}
+
+/**
+ * Get vessel IMO list from fleet
+ * @param fleetImo - Fleet IMO number
+ * @returns Array of vessel IMO numbers
+ */
+export async function getVesselImoListFromFleet(fleetImo: number): Promise<number[]> {
+    try {
+        const client = await getMongoClient();
+        const db = client.db(getConfig().dbName);
+        const collection = db.collection('vessels');
+        
+        const vessels = await collection.find(
+            { fleetImo: fleetImo },
+            { projection: { imo: 1, _id: 0 } }
+        ).toArray();
+        
+        return vessels.map(vessel => vessel.imo);
+    } catch (error) {
+        logger.error(`Error getting vessel IMO list for fleet IMO ${fleetImo}:`, error);
+        return [];
+    }
+}
+
+/**
+ * Export defects for a list of IMO numbers
+ * @param imoList - Array of IMO numbers
+ * @param startDate - Start date filter (optional)
+ * @param endDate - End date filter (optional)
+ * @returns Array of defect documents
+ */
+export async function exportDefectsForImoList(imoList: number[], startDate?: string, endDate?: string): Promise<any[]> {
+    try {
+        const client = getTypesenseClient();
+        const collection = client.collections('defect');
+        
+        const dateToTs = (dateStr: string): number => {
+            return Math.floor(new Date(dateStr).getTime() / 1000);
+        };
+
+        const filterParts = [`imo:[${imoList.join(',')}]`];
+
+        if (startDate) {
+            const startTs = dateToTs(startDate);
+            filterParts.push(`reportDate:>=${startTs}`);
+        }
+        if (endDate) {
+            const endTs = dateToTs(endDate);
+            filterParts.push(`reportDate:<=${endTs}`);
+        }
+
+        const filterBy = filterParts.join(" && ");
+        const query = {
+            filter_by: filterBy,
+            exclude_fields: "_id,docId,fleetId,vesselId,fleetManagerId,technicalSuperintendentId,id"
+        };
+
+        const exportResult = await collection.documents().export(query);
+        
+        let exportData: string;
+        if (typeof exportResult === 'string') {
+            exportData = exportResult;
+        } else if (exportResult && typeof exportResult === 'object' && 'buffer' in exportResult) {
+            exportData = new TextDecoder().decode(exportResult as ArrayBuffer);
+        } else {
+            exportData = String(exportResult);
+        }
+
+        const documents = exportData
+            .split('\n')
+            .filter(line => line.trim())
+            .map(line => JSON.parse(line));
+
+        // Convert timestamps to date strings for specified fields
+        const dateFields = [
+            'inspectionTargetDate',
+            'reportDate',
+            'closingDate',
+            'targetDate',
+            'nextDueDate',
+            'extendedDate'
+        ];
+
+        for (const doc of documents) {
+            for (const field of dateFields) {
+                if (field in doc && typeof doc[field] === 'number') {
+                    try {
+                        doc[field] = new Date(doc[field] * 1000).toISOString().replace('T', ' ').substring(0, 19);
+                    } catch (error) {
+                        // Keep original value if conversion fails
+                    }
+                }
+            }
+        }
+
+        return documents;
+    } catch (error) {
+        logger.error('Error exporting defects for IMO list:', error);
+        return [];
+    }
+}
+
+/**
+ * Convert data to CSV format
+ * @param data - Array of objects to convert
+ * @returns CSV string
+ */
+export function convertToCSV(data: any[]): string {
+    if (!data.length) return "";
+
+    const headers = Object.keys(data[0]);
+    
+    const escapeCSV = (value: any): string => {
+        const str = value != null ? String(value) : "";
+        const needsEscaping = /[",\n]/.test(str);
+        const escaped = str.replace(/"/g, '""'); // escape double quotes
+        return needsEscaping ? `"${escaped}"` : escaped;
+    };
+
+    const rows = data.map(doc =>
+        headers.map(header => escapeCSV(doc[header])).join(',')
+    );
+
+    return [headers.join(','), ...rows].join('\n');
 }

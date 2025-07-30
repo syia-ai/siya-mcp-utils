@@ -1,7 +1,7 @@
 {
   "name": "syia-mcp-utils",
-  "version": "1.0.7",
-  "description": "Global utility functions for purchase MCP server",
+  "version": "1.0.20",
+  "description": "Global utility functions for MCP server",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -22,7 +22,10 @@
   "keywords": [
     "utils",
     "utilities",
-    "global"
+    "global",
+    "mcp",
+    "purchase",
+    "pms"
   ],
   "author": "",
   "license": "ISC",
@@ -33,7 +36,8 @@
     "mongodb": "^5.0.0",
     "typesense": "^1.0.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "dotenv": "^16.0.0"
+    "dotenv": "^16.0.0",
+    "playwright": "^1.53.0"
   },
   "devDependencies": {
     "typescript": "^5.0.0",
