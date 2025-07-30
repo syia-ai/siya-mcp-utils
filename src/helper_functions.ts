@@ -7,6 +7,7 @@ import { getConfig } from "./config";
 import { TextContent } from "@modelcontextprotocol/sdk/types.js";
 import { getCompanyImoNumbers, shouldBypassImoFiltering } from "./imoUtils.js";
 import { getTypesenseClient } from "./typesense.js";
+import { MongoClient } from 'mongodb';
 
 export async function fetchQADetails(imo: string, qaId: number): Promise<any> {
     try {
@@ -1262,49 +1263,65 @@ export function convertDefectDates(document: Record<string, any>): Record<string
 }
 
 /**
- * Get fleet IMO by fleet name
- * @param fleetName - Name of the fleet
- * @returns Fleet IMO number or null
+ * Step 1: Query Typesense fleet-details collection to get fleet IMO by name
+ * @param fleetName - Name of the fleet (e.g., "SMPL DRY")
+ * @returns Promise<number | null> - Fleet IMO number or null if not found
  */
 export async function getFleetImoByName(fleetName: string): Promise<number | null> {
-    try {
-        const client = await getMongoClient();
-        const db = client.db(getConfig().dbName);
-        const collection = db.collection('fleets');
-        
-        const result = await collection.findOne(
-            { fleetName: fleetName },
-            { projection: { imo: 1, _id: 0 } }
-        );
-        
-        return result ? result.imo : null;
-    } catch (error) {
-        logger.error(`Error getting fleet IMO for fleet name ${fleetName}:`, error);
-        return null;
+  try {
+    const client = getTypesenseClient();
+    
+    const searchResult = await client.collections('fleet-details').documents().search({
+      q: fleetName,
+      query_by: 'name',
+      per_page: 1
+    });
+    
+    if (searchResult.hits && searchResult.hits.length > 0) {
+      const fleetDoc = searchResult.hits[0].document as any;
+      return fleetDoc.imo || null;
     }
+    
+    return null;
+  } catch (error) {
+    logger.error(`Error fetching fleet IMO for ${fleetName}:`, error);
+    return null;
+  }
 }
 
 /**
- * Get vessel IMO list from fleet
- * @param fleetImo - Fleet IMO number
- * @returns Array of vessel IMO numbers
+ * Step 2: Query MongoDB common_group_details collection to get vessel IMO list
+ * @param fleetImo - IMO number of the fleet
+ * @returns Promise<number[]> - Array of vessel IMO numbers
  */
 export async function getVesselImoListFromFleet(fleetImo: number): Promise<number[]> {
-    try {
-        const client = await getMongoClient();
-        const db = client.db(getConfig().dbName);
-        const collection = db.collection('vessels');
-        
-        const vessels = await collection.find(
-            { fleetImo: fleetImo },
-            { projection: { imo: 1, _id: 0 } }
-        ).toArray();
-        
-        return vessels.map(vessel => vessel.imo);
-    } catch (error) {
-        logger.error(`Error getting vessel IMO list for fleet IMO ${fleetImo}:`, error);
-        return [];
+  const mongoUri = getConfig().mongoUri;
+  const dbName = getConfig().dbName;
+  
+  if (!mongoUri || !dbName) {
+    throw new Error('Company database URI and name are required for fleet operations');
+  }
+  
+  const client = new MongoClient(mongoUri);
+  
+  try {
+    await client.connect();
+    const db = client.db(dbName);
+    const collection = db.collection('common_group_details');
+    
+    const fleetDoc = await collection.findOne({ imo: fleetImo });
+    
+    if (fleetDoc && fleetDoc.imoList && Array.isArray(fleetDoc.imoList)) {
+      return fleetDoc.imoList;
     }
+    
+    return [];
+  } catch (error) {
+    logger.error(`Error fetching vessel IMO list for fleet ${fleetImo}:`, error);
+    throw error;
+  } finally {
+    await client.close();
+  }
 }
 
 /**
