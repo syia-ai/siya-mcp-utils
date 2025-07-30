@@ -1408,3 +1408,225 @@ export function convertToCSV(data: any[]): string {
 
     return [headers.join(','), ...rows].join('\n');
 }
+
+/**
+ * Export purchases for a list of IMO numbers
+ * @param imoList - Array of IMO numbers
+ * @param startDate - Start date filter (optional)
+ * @param endDate - End date filter (optional)
+ * @returns Array of purchase documents
+ */
+export async function exportPurchasesForImoList(imoList: number[], startDate?: string, endDate?: string): Promise<any[]> {
+    try {
+        const client = getTypesenseClient();
+        const collection = client.collections('purchase');
+        
+        const dateToTs = (dateStr: string): number => {
+            return Math.floor(new Date(dateStr).getTime() / 1000);
+        };
+
+        const filterParts = [`imo:[${imoList.join(',')}]`];
+
+        if (startDate) {
+            const startTs = dateToTs(startDate);
+            filterParts.push(`purchaseRequisitionDate:>=${startTs}`);
+        }
+        if (endDate) {
+            const endTs = dateToTs(endDate);
+            filterParts.push(`purchaseRequisitionDate:<=${endTs}`);
+        }
+
+        const filterBy = filterParts.join(" && ");
+        const query = {
+            filter_by: filterBy,
+            exclude_fields: "embedding"
+        };
+
+        const exportResult = await collection.documents().export(query);
+        
+        let exportData: string;
+        if (typeof exportResult === 'string') {
+            exportData = exportResult;
+        } else if (exportResult && typeof exportResult === 'object' && 'buffer' in exportResult) {
+            exportData = new TextDecoder().decode(exportResult as ArrayBuffer);
+        } else {
+            exportData = String(exportResult);
+        }
+
+        const documents = exportData
+            .split('\n')
+            .filter(line => line.trim())
+            .map(line => JSON.parse(line));
+
+        // Convert timestamps to date strings for specified fields
+        const dateFields = [
+            'purchaseRequisitionDate',
+            'purchaseOrderIssuedDate',
+            'orderReadinessDate'
+        ];
+
+        for (const doc of documents) {
+            for (const field of dateFields) {
+                if (field in doc && typeof doc[field] === 'number') {
+                    try {
+                        doc[field] = new Date(doc[field] * 1000).toISOString().replace('T', ' ').substring(0, 19);
+                    } catch (error) {
+                        // Keep original value if conversion fails
+                    }
+                }
+            }
+        }
+
+        return documents;
+    } catch (error) {
+        logger.error('Error exporting purchases for IMO list:', error);
+        return [];
+    }
+}
+
+/**
+ * Export budgets for a list of IMO numbers
+ * @param imoList - Array of IMO numbers
+ * @param startDate - Start date filter (optional)
+ * @param endDate - End date filter (optional)
+ * @returns Array of budget documents
+ */
+export async function exportBudgetsForImoList(imoList: number[], startDate?: string, endDate?: string): Promise<any[]> {
+    try {
+        const client = getTypesenseClient();
+        const collection = client.collections('budget');
+        
+        const dateToTs = (dateStr: string): number => {
+            return Math.floor(new Date(dateStr).getTime() / 1000);
+        };
+
+        const filterParts = [`imo:[${imoList.join(',')}]`];
+
+        if (startDate) {
+            const startTs = dateToTs(startDate);
+            filterParts.push(`date:>=${startTs}`);
+        }
+        if (endDate) {
+            const endTs = dateToTs(endDate);
+            filterParts.push(`date:<=${endTs}`);
+        }
+
+        const filterBy = filterParts.join(" && ");
+        const query = {
+            filter_by: filterBy,
+            exclude_fields: "embedding"
+        };
+
+        const exportResult = await collection.documents().export(query);
+        
+        let exportData: string;
+        if (typeof exportResult === 'string') {
+            exportData = exportResult;
+        } else if (exportResult && typeof exportResult === 'object' && 'buffer' in exportResult) {
+            exportData = new TextDecoder().decode(exportResult as ArrayBuffer);
+        } else {
+            exportData = String(exportResult);
+        }
+
+        const documents = exportData
+            .split('\n')
+            .filter(line => line.trim())
+            .map(line => JSON.parse(line));
+
+        // Convert timestamps to date strings for specified fields
+        const dateFields = [
+            'date'
+        ];
+
+        for (const doc of documents) {
+            for (const field of dateFields) {
+                if (field in doc && typeof doc[field] === 'number') {
+                    try {
+                        doc[field] = new Date(doc[field] * 1000).toISOString().replace('T', ' ').substring(0, 19);
+                    } catch (error) {
+                        // Keep original value if conversion fails
+                    }
+                }
+            }
+        }
+
+        return documents;
+    } catch (error) {
+        logger.error('Error exporting budgets for IMO list:', error);
+        return [];
+    }
+}
+
+/**
+ * Export expenses for a list of IMO numbers
+ * @param imoList - Array of IMO numbers
+ * @param startDate - Start date filter (optional)
+ * @param endDate - End date filter (optional)
+ * @returns Array of expense documents
+ */
+export async function exportExpensesForImoList(imoList: number[], startDate?: string, endDate?: string): Promise<any[]> {
+    try {
+        const client = getTypesenseClient();
+        const collection = client.collections('expense');
+        
+        const dateToTs = (dateStr: string): number => {
+            return Math.floor(new Date(dateStr).getTime() / 1000);
+        };
+
+        const filterParts = [`imo:[${imoList.join(',')}]`];
+
+        if (startDate) {
+            const startTs = dateToTs(startDate);
+            filterParts.push(`expenseDate:>=${startTs}`);
+        }
+        if (endDate) {
+            const endTs = dateToTs(endDate);
+            filterParts.push(`expenseDate:<=${endTs}`);
+        }
+
+        const filterBy = filterParts.join(" && ");
+        const query = {
+            filter_by: filterBy,
+            exclude_fields: "embedding"
+        };
+
+        const exportResult = await collection.documents().export(query);
+        
+        let exportData: string;
+        if (typeof exportResult === 'string') {
+            exportData = exportResult;
+        } else if (exportResult && typeof exportResult === 'object' && 'buffer' in exportResult) {
+            exportData = new TextDecoder().decode(exportResult as ArrayBuffer);
+        } else {
+            exportData = String(exportResult);
+        }
+
+        const documents = exportData
+            .split('\n')
+            .filter(line => line.trim())
+            .map(line => JSON.parse(line));
+
+        // Convert timestamps to date strings for specified fields
+        const dateFields = [
+            'expenseDate',
+            'poDate'
+        ];
+
+        for (const doc of documents) {
+            for (const field of dateFields) {
+                if (field in doc && typeof doc[field] === 'number') {
+                    try {
+                        doc[field] = new Date(doc[field] * 1000).toISOString().replace('T', ' ').substring(0, 19);
+                    } catch (error) {
+                        // Keep original value if conversion fails
+                    }
+                }
+            }
+        }
+
+        return documents;
+    } catch (error) {
+        logger.error('Error exporting expenses for IMO list:', error);
+        return [];
+    }
+}
