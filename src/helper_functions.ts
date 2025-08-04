@@ -571,7 +571,7 @@ export function convertToCSV(data: any[]): string {
     return [headers.join(','), ...rows].join('\n');
 }
 
-export async function processTypesenseExportResults(
+export async function processTypesenseResults(
     documents: any[],
     toolName: string,
     title: string,
