@@ -2,9 +2,6 @@ import { logger } from './logger.js';
 import { getEtlDevDataClient, getEtlDevDataDbName } from './mongodb.js';
 import { getConfig } from './config.js';
 
-// Store IMO numbers for the company
-let companyImoNumbers: string[] = [];
-
 /**
  * Fetch IMO numbers for a specific company from MongoDB
  * @param companyName The name of the company to fetch IMO numbers for
@@ -30,7 +27,6 @@ export async function fetchCompanyImoNumbers(companyName: string): Promise<strin
     
     if (!result || !result.imoList) {
       logger.warn(`No IMO numbers found for company: ${companyName}`);
-      companyImoNumbers = [];
       return [];
     }
     
@@ -39,22 +35,11 @@ export async function fetchCompanyImoNumbers(companyName: string): Promise<strin
     
     logger.info(`Found ${imoNumbers.length} IMO numbers for company: ${companyName}`);
     
-    // Store the IMO numbers for later use
-    companyImoNumbers = imoNumbers;
-    
     return imoNumbers;
   } catch (error) {
     logger.error(`Error fetching IMO numbers for company ${companyName}:`, error);
     throw error;
   }
-}
-
-/**
- * Get the cached IMO numbers for the company
- * @returns Array of IMO numbers as strings
- */
-export function getCompanyImoNumbers(): string[] {
-  return companyImoNumbers;
 }
 
 /**
@@ -72,10 +57,10 @@ export function shouldBypassImoFiltering(companyName: string): boolean {
 /**
  * Validate if an IMO number is valid for the current company
  * @param imoNumber - IMO number to validate (string or number)
- * @param companyName - Optional company name for additional validation
- * @returns Object with validation result and error message
+ * @param companyName - Company name to fetch IMO numbers for
+ * @returns Promise that resolves to boolean indicating if IMO is valid
  */
-export function isValidImoForCompany(imoNumber: string | number): boolean {
+export async function isValidImoForCompany(imoNumber: string | number, companyName: string): Promise<boolean> {
   try {
     // Convert to string for consistent comparison
     const imoStr = String(imoNumber);
@@ -86,7 +71,7 @@ export function isValidImoForCompany(imoNumber: string | number): boolean {
     }
     
     // Check if IMO is in company's authorized list
-    const companyImos = getCompanyImoNumbers();
+    const companyImos = await fetchCompanyImoNumbers(companyName);
     if (companyImos.length === 0) {
       // If no company IMOs are set, allow all valid IMO numbers
       return true;

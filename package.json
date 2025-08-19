@@ -1,13 +1,16 @@
 {
   "name": "syia-mcp-utils",
-  "version": "1.0.31",
+  "version": "2.0.4",
   "description": "Global utility functions for MCP server",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "npm run bump:patch && tsc",
     "build-only": "tsc",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "test:getDataLink": "node test-run-getDataLink.js",
     "version:patch": "npm version patch",
     "version:minor": "npm version minor",
     "version:major": "npm version major",
@@ -30,17 +33,20 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "openai": "^4.0.0",
-    "axios": "^1.0.0",
-    "winston": "^3.0.0",
-    "mongodb": "^5.0.0",
-    "typesense": "^1.0.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "axios": "^1.0.0",
     "dotenv": "^16.0.0",
-    "playwright": "^1.53.0"
+    "mongodb": "^5.0.0",
+    "openai": "^4.0.0",
+    "playwright": "^1.53.0",
+    "typesense": "^1.0.0",
+    "winston": "^3.0.0"
   },
   "devDependencies": {
-    "typescript": "^5.0.0",
-    "@types/node": "^20.0.0"
+    "@types/jest": "^30.0.0",
+    "@types/node": "^20.0.0",
+    "jest": "^30.0.5",
+    "ts-jest": "^29.4.1",
+    "typescript": "^5.0.0"
   }
 }

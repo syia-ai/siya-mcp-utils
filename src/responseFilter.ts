@@ -2,7 +2,6 @@ import { ToolResponse } from './types/index.js';
 import { getConfig } from './config.js';
 import { logger } from './logger.js';
 import { 
-    getCompanyImoNumbers, 
     shouldBypassImoFiltering, 
     isValidImoForCompany 
 } from './imoUtils.js';
@@ -55,24 +54,24 @@ function findImoField(obj: any): { fieldName: string; value: any } | null {
  * @param stats - Statistics object to update
  * @returns Filtered array and updated statistics
  */
-function filterArrayByImo(array: any[], stats: FilterStats): { filtered: any[], stats: FilterStats } {
+async function filterArrayByImo(array: any[], stats: FilterStats): Promise<{ filtered: any[], stats: FilterStats }> {
     logger.debug(`Starting array filtering`, { arrayLength: array.length });
     
-    const filteredArray = array.filter(item => {
+    const filteredArray = [];
+    for (const item of array) {
         stats.itemsProcessed++;
         
         // Check if this item has an IMO field at any level
-        const hasUnauthorizedImo = checkForUnauthorizedImo(item);
+        const hasUnauthorizedImo = await checkForUnauthorizedImo(item);
         
         if (hasUnauthorizedImo.found) {
             stats.itemsFiltered++;
             stats.unauthorizedImos.push(hasUnauthorizedImo.location);
             logger.debug(`Filtered item with unauthorized IMO: ${hasUnauthorizedImo.location}`);
-            return false;
+        } else {
+            filteredArray.push(item);
         }
-
-        return true;
-    });
+    }
 
     logger.debug(`Array filtering complete`, { 
         originalLength: array.length, 
@@ -88,15 +87,18 @@ function filterArrayByImo(array: any[], stats: FilterStats): { filtered: any[], 
  * @param obj - Object to check
  * @returns Object with found flag and location string
  */
-function checkForUnauthorizedImo(obj: any): { found: boolean, location: string } {
+async function checkForUnauthorizedImo(obj: any): Promise<{ found: boolean, location: string }> {
     if (!obj || typeof obj !== 'object') {
         return { found: false, location: '' };
     }
 
     // Check direct IMO fields
     const imoField = findImoField(obj);
-    if (imoField && !isValidImoForCompany(imoField.value)) {
-        return { found: true, location: `${imoField.fieldName}: ${imoField.value}` };
+    if (imoField) {
+        const companyName = getConfig().companyName || '';
+        if (!await isValidImoForCompany(imoField.value, companyName)) {
+            return { found: true, location: `${imoField.fieldName}: ${imoField.value}` };
+        }
     }
 
     // Check nested objects and arrays
@@ -104,14 +106,14 @@ function checkForUnauthorizedImo(obj: any): { found: boolean, location: string }
         if (Array.isArray(value)) {
             // Check each item in the array
             for (let i = 0; i < value.length; i++) {
-                const result = checkForUnauthorizedImo(value[i]);
+                const result = await checkForUnauthorizedImo(value[i]);
                 if (result.found) {
                     return { found: true, location: `${key}[${i}].${result.location}` };
                 }
             }
         } else if (typeof value === 'object' && value !== null) {
             // Recursively check nested objects
-            const result = checkForUnauthorizedImo(value);
+            const result = await checkForUnauthorizedImo(value);
             if (result.found) {
                 return { found: true, location: `${key}.${result.location}` };
             }
@@ -127,13 +129,13 @@ function checkForUnauthorizedImo(obj: any): { found: boolean, location: string }
  * @param stats - Statistics object to update
  * @returns Filtered content and updated statistics
  */
-function filterResponseContent(content: any, stats: FilterStats): { filtered: any, stats: FilterStats } {
+async function filterResponseContent(content: any, stats: FilterStats): Promise<{ filtered: any, stats: FilterStats }> {
     if (Array.isArray(content)) {
-        const { filtered, stats: updatedStats } = filterArrayByImo(content, stats);
+        const { filtered, stats: updatedStats } = await filterArrayByImo(content, stats);
         return { filtered, stats: updatedStats };
     } else if (content && typeof content === 'object') {
         // Check if this object has unauthorized IMO
-        const hasUnauthorizedImo = checkForUnauthorizedImo(content);
+        const hasUnauthorizedImo = await checkForUnauthorizedImo(content);
         if (hasUnauthorizedImo.found) {
             stats.itemsFiltered++;
             stats.unauthorizedImos.push(hasUnauthorizedImo.location);
@@ -144,7 +146,7 @@ function filterResponseContent(content: any, stats: FilterStats): { filtered: an
         // Recursively filter nested objects
         const filteredContent: any = {};
         for (const [key, value] of Object.entries(content)) {
-            const { filtered: filteredValue, stats: updatedStats } = filterResponseContent(value, stats);
+            const { filtered: filteredValue, stats: updatedStats } = await filterResponseContent(value, stats);
             if (filteredValue !== null) {
                 filteredContent[key] = filteredValue;
             }
@@ -177,16 +179,8 @@ export async function filterResponseByCompanyImos(response: ToolResponse): Promi
             return response;
         }
 
-        // Get company IMO numbers
-        const companyImos = getCompanyImoNumbers();
-        if (companyImos.length === 0) {
-            logger.warn('No company IMO numbers available, skipping filtering');
-            return response;
-        }
-
         logger.debug('Starting response filtering', { 
-            responseLength: response.length,
-            companyImosCount: companyImos.length 
+            responseLength: response.length
         });
 
         const filteredResponse: ToolResponse = [];
@@ -196,7 +190,7 @@ export async function filterResponseByCompanyImos(response: ToolResponse): Promi
                 // Try to parse JSON content
                 try {
                     const parsedContent = JSON.parse(item.text);
-                    const { filtered: filteredContent, stats: updatedStats } = filterResponseContent(parsedContent, stats);
+                    const { filtered: filteredContent, stats: updatedStats } = await filterResponseContent(parsedContent, stats);
                     
                     if (filteredContent !== null) {
                         filteredResponse.push({
@@ -210,7 +204,7 @@ export async function filterResponseByCompanyImos(response: ToolResponse): Promi
                 }
             } else {
                 // For other types (image, resource), check if they contain unauthorized IMO
-                const hasUnauthorizedImo = checkForUnauthorizedImo(item);
+                const hasUnauthorizedImo = await checkForUnauthorizedImo(item);
                 if (!hasUnauthorizedImo.found) {
                     filteredResponse.push(item);
                 } else {
@@ -244,13 +238,13 @@ export async function filterResponseByCompanyImos(response: ToolResponse): Promi
  * @param item - Response item to filter
  * @returns Filtered item or null if unauthorized
  */
-export function filterSingleResponseItem(item: any): any | null {
+export async function filterSingleResponseItem(item: any): Promise<any | null> {
     if (!item || typeof item !== 'object') {
         return item;
     }
 
     // Check if this item has unauthorized IMO
-    const hasUnauthorizedImo = checkForUnauthorizedImo(item);
+    const hasUnauthorizedImo = await checkForUnauthorizedImo(item);
     if (hasUnauthorizedImo.found) {
         logger.debug(`Filtered single item with unauthorized IMO: ${hasUnauthorizedImo.location}`);
         return null;
@@ -264,9 +258,9 @@ export function filterSingleResponseItem(item: any): any | null {
  * @param response - ToolResponse to check
  * @returns True if unauthorized IMO found
  */
-export function hasUnauthorizedImos(response: ToolResponse): boolean {
+export async function hasUnauthorizedImos(response: ToolResponse): Promise<boolean> {
     for (const item of response) {
-        const hasUnauthorizedImo = checkForUnauthorizedImo(item);
+        const hasUnauthorizedImo = await checkForUnauthorizedImo(item);
         if (hasUnauthorizedImo.found) {
             return true;
         }
@@ -279,7 +273,7 @@ export function hasUnauthorizedImos(response: ToolResponse): boolean {
  * @param response - ToolResponse to analyze
  * @returns FilterStats object
  */
-export function getFilteringStats(response: ToolResponse): FilterStats {
+export async function getFilteringStats(response: ToolResponse): Promise<FilterStats> {
     const stats: FilterStats = {
         itemsProcessed: 0,
         itemsFiltered: 0,
@@ -289,7 +283,7 @@ export function getFilteringStats(response: ToolResponse): FilterStats {
 
     for (const item of response) {
         stats.itemsProcessed++;
-        const hasUnauthorizedImo = checkForUnauthorizedImo(item);
+        const hasUnauthorizedImo = await checkForUnauthorizedImo(item);
         if (hasUnauthorizedImo.found) {
             stats.itemsFiltered++;
             stats.unauthorizedImos.push(hasUnauthorizedImo.location);
