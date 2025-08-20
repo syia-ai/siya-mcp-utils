@@ -1,0 +1,129 @@
+name: Release and Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: 'Version bump type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - prerelease
+
+jobs:
+  release-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@syia-ai'
+          
+      - name: Configure Git
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+      - name: Install dependencies
+        run: npm ci
+        
+      - name: Build project
+        run: npm run build
+
+      - name: Bump version
+        id: version
+        run: |
+          NEW_VERSION=$(npm version ${{ github.event.inputs.version_type }} --no-git-tag-version)
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "version_without_v=${NEW_VERSION#v}" >> $GITHUB_OUTPUT
+          
+      - name: Commit version change
+        run: |
+          git add package.json package-lock.json
+          git commit -m "chore: bump version to ${{ steps.version.outputs.new_version }}"
+          
+      - name: Publish to GitHub Package Registry
+        run: |
+          # Configure npm for GitHub Package Registry
+          echo "@syia-ai:registry=https://npm.pkg.github.com" >> ~/.npmrc
+          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> ~/.npmrc
+          echo "always-auth=true" >> ~/.npmrc
+          
+          # Verify authentication
+          echo "Verifying npm authentication..."
+          npm whoami --registry=https://npm.pkg.github.com
+          
+          # Publish package
+          echo "Publishing package..."
+          npm publish --access restricted || {
+            echo "First attempt failed, trying alternative method..."
+            npm publish --registry=https://npm.pkg.github.com --access=restricted
+          }
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            
+      - name: Create and push tag (after successful publish)
+        run: |
+          git tag ${{ steps.version.outputs.new_version }}
+          git push origin main
+          git push origin ${{ steps.version.outputs.new_version }}
+          
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.version.outputs.new_version }}
+          release_name: Release ${{ steps.version.outputs.new_version }}
+          body: |
+            Release ${{ steps.version.outputs.new_version }}
+            
+            ## Installation
+            
+            ### From GitHub Package Registry
+            ```bash
+            npm install @syia-ai/siya-mcp-utils@${{ steps.version.outputs.version_without_v }}
+            ```
+            
+            ### Using npx
+            ```bash
+            npx @syia-ai/siya-mcp-utils@${{ steps.version.outputs.version_without_v }}
+            ```
+            
+            ## Changes
+            See the commit history for detailed changes in this release.
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.new_version, 'pre') }}
+          
+      - name: Create deployment summary
+        run: |
+          echo "🚀 Release ${{ steps.version.outputs.new_version }} Published Successfully!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📦 Package Information" >> $GITHUB_STEP_SUMMARY
+          echo "- **Package**: \`@syia-ai/siya-mcp-utils\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: \`${{ steps.version.outputs.version_without_v }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Registry**: https://npm.pkg.github.com" >> $GITHUB_STEP_SUMMARY
+          echo "- **Package URL**: https://github.com/syia-ai/siya-mcp-utils/packages" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📥 Installation Commands" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "npm install @syia-ai/siya-mcp-utils@${{ steps.version.outputs.version_without_v }}" >> $GITHUB_STEP_SUMMARY
+          echo "# or" >> $GITHUB_STEP_SUMMARY
+          echo "npx @syia-ai/siya-mcp-utils@${{ steps.version.outputs.version_without_v }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY 
