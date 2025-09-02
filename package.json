@@ -1,6 +1,6 @@
 {
   "name": "syia-mcp-utils",
-  "version": "2.0.6",
+  "version": "2.0.7",
   "description": "Global utility functions for MCP server",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
