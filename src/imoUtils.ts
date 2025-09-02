@@ -82,4 +82,28 @@ export async function isValidImoForCompany(imoNumber: string | number, companyNa
     logger.error('Error validating IMO number:', error);
     return false;
   }
+}
+
+/**
+ * Initialize IMO cache for a company
+ * @param companyName - Name of the company to initialize cache for
+ */
+export async function initializeImoCache(companyName: string): Promise<void> {
+  try {
+    logger.info(`Initializing IMO cache for company: ${companyName}`);
+    
+    // Fetch company IMOs and cache them
+    const imos = await fetchCompanyImoNumbers(companyName);
+    
+    // For now, just log the IMOs found
+    // In a production system, you might want to store this in memory or a cache
+    logger.info(`IMO cache initialized with ${imos.length} IMO numbers for company: ${companyName}`);
+    
+    if (imos.length > 0) {
+      logger.debug(`Sample IMOs: ${imos.slice(0, 5).join(', ')}${imos.length > 5 ? '...' : ''}`);
+    }
+  } catch (error) {
+    logger.error(`Error initializing IMO cache for company ${companyName}:`, error);
+    // Don't throw error, just log it - cache initialization failure shouldn't stop the server
+  }
 } 

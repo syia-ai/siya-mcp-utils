@@ -692,7 +692,7 @@ export async function processTypesenseResults(
 export async function processTypesenseExportResults(
     documents: any[],
     toolName: string,
-    title: string,
+    title: string, 
     artifactTitle: string,
     session_id: string,
     linkHeader: string,

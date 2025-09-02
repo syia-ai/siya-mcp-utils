@@ -9,4 +9,7 @@ export function getConfig() {
     throw new Error("Config not set. Call setConfig(config) in server startup.");
   }
   return _config;
-} 
+}
+
+// Export config as default for easier importing
+export { getConfig as config }; 

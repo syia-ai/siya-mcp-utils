@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { logger } from "./logger.js";
+import { config } from './config.js';
 import axios from 'axios';
 
 interface LLMResponse {
@@ -194,5 +195,171 @@ export async function getLLMResponse(prompt: string): Promise<LLMResponse> {
             flag: "",
             importance: "medium"
         };
+    }
+}
+
+// New enhanced interfaces and LLMClient
+export interface ChatMessage {
+    role: 'system' | 'user' | 'assistant';
+    content: string | Array<{
+        type: 'text' | 'image_url';
+        text?: string;
+        image_url?: {
+            url: string;
+        };
+    }>;
+}
+
+export interface EnhancedLLMResponse {
+    content: string;
+    usage?: {
+        prompt_tokens: number;
+        completion_tokens: number;
+        total_tokens: number;
+    };
+}
+
+export class EnhancedLLMClient {
+    private openai: OpenAI;
+
+    constructor(apiKey?: string) {
+        const key = apiKey || config().openai?.apiKey || process.env.OPENAI_API_KEY;
+        if (!key) {
+            throw new Error('OpenAI API key is required');
+        }
+        
+        this.openai = new OpenAI({
+            apiKey: key
+        });
+        
+        logger.info('Enhanced LLM client initialized successfully');
+    }
+
+    async ask(
+        query: string,
+        systemPrompt?: string,
+        modelName: string = 'gpt-4o',
+        jsonMode: boolean = false,
+        temperature: number = 0.1,
+        maxTokens?: number
+    ): Promise<any> {
+        try {
+            const messages: ChatMessage[] = [];
+            
+            if (systemPrompt) {
+                messages.push({
+                    role: 'system',
+                    content: systemPrompt
+                });
+            }
+            
+            messages.push({
+                role: 'user',
+                content: query
+            });
+
+            const requestParams: any = {
+                model: modelName,
+                messages,
+                temperature,
+                max_tokens: maxTokens
+            };
+
+            if (jsonMode) {
+                requestParams.response_format = { type: 'json_object' };
+            }
+
+            logger.debug(`Making LLM request with model: ${modelName}`);
+            const response = await this.openai.chat.completions.create(requestParams);
+
+            const content = response.choices[0]?.message?.content;
+            if (!content) {
+                throw new Error('No content in LLM response');
+            }
+
+            // Parse JSON if json_mode is enabled
+            if (jsonMode) {
+                try {
+                    return JSON.parse(content);
+                } catch (parseError) {
+                    logger.error('Failed to parse JSON response:', parseError);
+                    throw new Error('Invalid JSON response from LLM');
+                }
+            }
+
+            return content;
+        } catch (error) {
+            logger.error('LLM request failed:', error);
+            throw error;
+        }
+    }
+
+    async chatCompletion(
+        messages: ChatMessage[],
+        modelName: string = 'gpt-4o',
+        temperature: number = 0.1,
+        maxTokens?: number
+    ): Promise<string> {
+        try {
+            const requestParams: any = {
+                model: modelName,
+                messages,
+                temperature,
+                max_tokens: maxTokens
+            };
+
+            logger.debug(`Making chat completion request with model: ${modelName}`);
+            const response = await this.openai.chat.completions.create(requestParams);
+
+            const content = response.choices[0]?.message?.content;
+            if (!content) {
+                throw new Error('No content in chat completion response');
+            }
+
+            return content;
+        } catch (error) {
+            logger.error('Chat completion request failed:', error);
+            throw error;
+        }
+    }
+
+    async generateEmbedding(text: string, model: string = 'text-embedding-ada-002'): Promise<number[]> {
+        try {
+            logger.debug(`Generating embedding for text of length: ${text.length}`);
+            const response = await this.openai.embeddings.create({
+                model,
+                input: text
+            });
+
+            return response.data[0].embedding;
+        } catch (error) {
+            logger.error('Embedding generation failed:', error);
+            throw error;
+        }
+    }
+
+    async solveCaptcha(captchaImage: string, prompt: string = "This is a captcha image containing only numbers. Please extract and return only the numbers you see in the image, nothing else."): Promise<string> {
+        try {
+            const messages: ChatMessage[] = [
+                {
+                    role: 'user',
+                    content: [
+                        { type: 'text', text: prompt },
+                        {
+                            type: 'image_url',
+                            image_url: {
+                                url: `data:image/jpeg;base64,${captchaImage}`
+                            }
+                        }
+                    ]
+                }
+            ];
+
+            const result = await this.chatCompletion(messages, 'gpt-4o-mini');
+            return result.trim();
+        } catch (error) {
+            logger.error('Captcha solving failed:', error);
+            throw error;
+        }
     }
 } 

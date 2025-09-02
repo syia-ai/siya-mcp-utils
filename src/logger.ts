@@ -21,6 +21,9 @@ try {
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const isProd = NODE_ENV === 'production';
 
+// Get service name from environment variable or use default
+const SERVICE_NAME = process.env.SERVICE_NAME || 'unknown';
+
 // Configure log level based on environment
 const logLevel = isProd ? 'info' : process.env.LOG_LEVEL || 'debug';
 
@@ -78,7 +81,7 @@ if (canWriteLogs) {
 export const logger = winston.createLogger({
   level: logLevel,
   format: isProd ? productionFormat : developmentFormat,
-  defaultMeta: { service: 'purchase-mcp-server', environment: NODE_ENV },
+  defaultMeta: { service: SERVICE_NAME, environment: NODE_ENV },
   transports,
   exceptionHandlers,
   exitOnError: false
