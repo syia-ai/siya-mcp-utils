@@ -1115,7 +1115,6 @@ export async function getAuthorizedImoNumbers(): Promise<string[]> {
     return await fetchCompanyImoNumbers(companyName);
 }
 
-
 /**
  * Log IMO filtering activity for monitoring (PMS version)
  * @param action - Action being performed
@@ -1144,7 +1143,7 @@ export async function logImoFilteringActivity(action: string, details: any = {})
  * @param timestampFields - Fields to convert from UNIX timestamp to ISO string
  * @returns Array of parsed and processed documents
  */
-async function exportDataForImoListGeneric(
+export async function exportDataForImoListGeneric(
     collectionName: string,
     imoList: number[],
     startDate?: string,
