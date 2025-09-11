@@ -1,20 +1,26 @@
-import { getEtlDevClient } from "./mongodb.js";
-import { getEtlDevDbName } from "./mongodb.js";
+import { DatabaseManager } from "./mongodb.js";
 import { logger } from "./logger.js";
 import { ToolArguments, ToolResponse } from "./types/index.js";
-import { getMongoClient } from "./mongodb.js";
 import { getConfig } from "./config";
 import { TextContent } from "@modelcontextprotocol/sdk/types.js";
 import { fetchCompanyImoNumbers, shouldBypassImoFiltering } from "./imoUtils.js";
 import { getTypesenseClient } from "./typesense.js";
 import { MongoClient } from 'mongodb';
 
-export async function fetchQADetails(imo: string, qaId: number): Promise<any> {
+export async function fetchQADetails(
+    imo: string, 
+    qaId: number, 
+    vesselInfoDbName: string,
+    vesselInfoMongoUri: string,
+    collectionName: string = 'vesselinfos'
+): Promise<any> {
+    const databaseManager = new DatabaseManager();
+    
     try {
-        const client = await getEtlDevClient();
-        const db = client.db(getEtlDevDbName());
-        const vesselinfos = db.collection('vesselinfos');
-
+        await databaseManager.initializeDatabase(vesselInfoDbName, vesselInfoMongoUri);
+        const vesselInfoDb = databaseManager.getDb();
+        const collection = vesselInfoDb.collection(collectionName);
+        
         const query = {
             'imo': parseInt(imo),
             'questionNo': qaId
@@ -36,7 +42,7 @@ export async function fetchQADetails(imo: string, qaId: number): Promise<any> {
             Artifactlink?: string | null;
         }
 
-        const mongoResult = await vesselinfos.findOne(query, { projection });
+        const mongoResult = await collection.findOne(query, { projection });
         let res: QAResponse = mongoResult ? {
             imo: mongoResult.imo as number,
             vesselName: mongoResult.vesselName as string | null,
@@ -60,7 +66,7 @@ export async function fetchQADetails(imo: string, qaId: number): Promise<any> {
 
         // Process answer with component data if it exists
         if (res.answer) {
-            res.answer = await addComponentData(res.answer, imo);
+            res.answer = await addComponentData(res.answer, imo, vesselInfoDbName, vesselInfoMongoUri);
         }
 
         // Get vessel QnA snapshot link
@@ -74,6 +80,8 @@ export async function fetchQADetails(imo: string, qaId: number): Promise<any> {
     } catch (error: any) {
         logger.error('Error fetching QA details:', error);
         throw new Error(`Error fetching QA details: ${error.message}`);
+    } finally {
+        await databaseManager.closeDatabase();
     }
 }
 
@@ -84,20 +92,25 @@ export async function fetchQADetailsAndCreateResponse(
     questionNo: number, 
     functionName: string, 
     linkHeader: string, 
-    session_id: string = "testing"
+    sessionId: string = "testing",
+    vesselInfoDbName: string,
+    vesselInfoMongoUri: string,
+    collectionName: string = 'vesselinfos'
 ): Promise<ToolResponse> {
     if (!imo) {
         throw new Error("IMO is required");
     }
 
+    const databaseManager = new DatabaseManager();
+    
     try {
         // Fetch QA details
-        const result = await fetchQADetails(imo, questionNo);
+        const result = await fetchQADetails(imo, questionNo, vesselInfoDbName, vesselInfoMongoUri, collectionName);
         const link = result.Artifactlink;
         const vesselName = result.vesselName;
 
         // Insert data link to MongoDB
-        await insertDataLinkToMongoDB(link, linkHeader, session_id, imo, vesselName);
+        // await insertDataLinkToMongoDB(link, linkHeader, sessionId, imo, vesselName, vesselInfoDbName, vesselInfoMongoUri);
 
         // Get artifact data
         const artifactData = await getArtifact(functionName, link);
@@ -117,23 +130,31 @@ export async function fetchQADetailsAndCreateResponse(
     } catch (error: any) {
         logger.error(`Error in ${functionName}:`, error);
         throw new Error(`Error in ${functionName}: ${error.message}`);
+    } finally {
+        await databaseManager.closeDatabase();
     }
 }
 
 
-export async function getComponentData(componentId: string): Promise<string> {
+export async function getComponentData(componentId: string, vesselComponentsDbName: string, vesselComponentsMongoUri: string, collectionName: string = 'vesselinfocomponents'): Promise<string> {
     const match = componentId.match(/^(\d+)_(\d+)_(\d+)$/);
     if (!match) {
         return `⚠️ Invalid component_id format: ${componentId}`;
     }
 
+    if (!vesselComponentsDbName || !vesselComponentsMongoUri || !collectionName) {
+        throw new Error('Database name, MongoDB URI, and collection name are required');
+    }
+
     const [, componentNumber, questionNumber, imo] = match;
     const componentNo = `${componentNumber}_${questionNumber}_${imo}`;
 
+    const databaseManager = new DatabaseManager();
+    
     try {
-        const client = await getEtlDevClient();
-        const db = client.db(getEtlDevDbName());
-        const collection = db.collection('vesselinfocomponents');
+        await databaseManager.initializeDatabase(vesselComponentsDbName, vesselComponentsMongoUri);
+        const vesselComponentsDb = databaseManager.getDb();
+        const collection = vesselComponentsDb.collection(collectionName);
 
         const doc = await collection.findOne({ componentNo });
         if (!doc) {
@@ -173,10 +194,12 @@ export async function getComponentData(componentId: string): Promise<string> {
     } catch (error: any) {
         logger.error('Error getting component data:', error);
         throw new Error(`Error getting component data: ${error.message}`);
+    } finally {
+        await databaseManager.closeDatabase();
     }
 }
 
-export async function addComponentData(answer: string, imo: string): Promise<string> {
+export async function addComponentData(answer: string, imo: string, vesselComponentsDbName: string, vesselComponentsMongoUri: string): Promise<string> {
     const pattern = /httpsdev\.syia\.ai\/chat\/ag-grid-table\?component=(\d+_\d+)/g;
     const matches = Array.from(answer.matchAll(pattern));
     
@@ -184,7 +207,7 @@ export async function addComponentData(answer: string, imo: string): Promise<str
     for (const match of matches) {
         const component = match[1];
         try {
-            const replacement = await getComponentData(`${component}_${imo}`);
+            const replacement = await getComponentData(`${component}_${imo}`, vesselComponentsDbName, vesselComponentsMongoUri, 'vesselinfocomponents');
             result = result.replace(match[0], replacement);
         } catch (error) {
             logger.error('Error replacing component data:', error);
@@ -336,94 +359,109 @@ interface CasefileData {
     datetime: string;
 }
 
-/**
- * Generic function to insert data links into MongoDB
- */
-export async function insertDataLinkToMongoDBGeneric(options: InsertDataLinkOptions): Promise<void> {
-    try {
-        const mongoClient = await getMongoClient();
-        const db = mongoClient.db(getConfig().dbName);
-        const collection = db.collection(options.collectionName);
+// /**
+//  * Generic function to insert data links into MongoDB
+//  */
+// export async function insertDataLinkToMongoDBGeneric(options: InsertDataLinkOptions, dbName: string, mongoUri: string): Promise<void> {
+//     try {
+//         if (!dbName || !mongoUri) {
+//             throw new Error('Database name and MongoDB URI are required');
+//         }
 
-        if (options.mode === 'general') {
-            await collection.insertOne({
-                link: options.dataLink,
-                type: options.type,
-                sessionId: options.sessionId,
-                imo: options.imo,
-                vesselName: options.vesselName,
-                createdAt: new Date()
-            });
-        } else if (options.mode === 'pms') {
-            const linkData = {
-                link: options.dataLink,
-                linkHeader: options.linkHeader || ''
-            };
+//         const databaseManager = new DatabaseManager();
+//         await databaseManager.initializeDatabase(dbName, mongoUri);
+//         const db = databaseManager.getDb();
+//         const collection = db.collection(options.collectionName);
 
-            const sessionExists = await collection.findOne({ sessionId: options.sessionId });
+//         if (options.mode === 'general') {
+//             await collection.insertOne({
+//                 link: options.dataLink,
+//                 type: options.type,
+//                 sessionId: options.sessionId,
+//                 imo: options.imo,
+//                 vesselName: options.vesselName,
+//                 createdAt: new Date()
+//             });
+//         } else if (options.mode === 'pms') {
+//             const linkData = {
+//                 link: options.dataLink,
+//                 linkHeader: options.linkHeader || ''
+//             };
 
-            if (sessionExists) {
-                await collection.updateOne(
-                    { sessionId: options.sessionId },
-                    {
-                        $push: { links: { $each: [linkData] } },
-                        $set: { datetime: new Date().toISOString() }
-                    }
-                );
-            } else {
-                const newEntry: CasefileData = {
-                    sessionId: options.sessionId,
-                    imo: options.imo ?? '',
-                    vesselName: options.vesselName ?? '',
-                    links: [linkData],
-                    datetime: new Date().toISOString()
-                };
-                await collection.insertOne(newEntry);
-            }
-        } else {
-            throw new Error(`Unsupported insert mode: ${options.mode}`);
-        }
-    } catch (error: any) {
-        logger.error(`Error inserting data link to MongoDB [${options.mode}]:`, error);
-        throw new Error(`Error inserting data link to MongoDB: ${error.message}`);
-    }
-}
+//             const sessionExists = await collection.findOne({ sessionId: options.sessionId });
 
-export async function insertDataLinkToMongoDB(
-    link: string,
-    type: string,
-    sessionId: string,
-    imo: string,
-    vesselName: string
-): Promise<void> {
-    return insertDataLinkToMongoDBGeneric({
-        mode: 'general',
-        collectionName: 'data_links',
-        dataLink: link,
-        sessionId,
-        imo,
-        vesselName,
-        type
-    });
-}
+//             if (sessionExists) {
+//                 await collection.updateOne(
+//                     { sessionId: options.sessionId },
+//                     {
+//                         $push: { links: { $each: [linkData] } },
+//                         $set: { datetime: new Date().toISOString() }
+//                     }
+//                 );
+//             } else {
+//                 const newEntry: CasefileData = {
+//                     sessionId: options.sessionId,
+//                     imo: options.imo ?? '',
+//                     vesselName: options.vesselName ?? '',
+//                     links: [linkData],
+//                     datetime: new Date().toISOString()
+//                 };
+//                 await collection.insertOne(newEntry);
+//             }
+//         } else {
+//             throw new Error(`Unsupported insert mode: ${options.mode}`);
+//         }
+        
+//         await databaseManager.closeDatabase();
+//     } catch (error: any) {
+//         logger.error(`Error inserting data link to MongoDB [${options.mode}]:`, error);
+//         throw new Error(`Error inserting data link to MongoDB: ${error.message}`);
+//     }
+// }
 
-export async function insertPmsDataLinkToMongodb(
-    dataLink: string,
-    linkHeader: string,
-    sessionId: string,
-    imo?: string,
-    vesselName?: string
-): Promise<void> {
-    return insertDataLinkToMongoDBGeneric({
-        mode: 'pms',
-        collectionName: 'casefile_data',
-        dataLink,
-        linkHeader,
-        sessionId,
-        imo,
-        vesselName
-    });
-}
+// // export async function insertDataLinkToMongoDB(
+// //     link: string,
+// //     type: string,
+// //     sessionId: string,
+// //     imo: string,
+// //     vesselName: string,
+// //     dataLinksDbName: string,
+// //     dataLinksMongoUri: string
+// // ): Promise<void> {
+// //     return insertDataLinkToMongoDBGeneric({
+// //         mode: 'general',
+// //         collectionName: 'data_links',
+// //         dataLink: link,
+// //         sessionId,
+// //         imo,
+// //         vesselName,
+// //         type
+// //     }, dataLinksDbName, dataLinksMongoUri);
+// // }
+
+// export async function insertPmsDataLinkToMongodb(
+//     dataLink: string,
+//     linkHeader: string,
+//     sessionId: string,
+//     imo?: string,
+//     vesselName?: string,
+//     dbName?: string,
+//     mongoUri?: string
+// ): Promise<void> {
+//     if (!dbName || !mongoUri) {
+//         throw new Error('Database name and MongoDB URI are required');
+//     }
+    
+//     return insertDataLinkToMongoDBGeneric({
+//         mode: 'pms',
+//         collectionName: 'casefile_data',
+//         dataLink,
+//         linkHeader,
+//         sessionId,
+//         imo,
+//         vesselName
+//     }, dbName, mongoUri);
+// }
 
 
 export async function getArtifact(toolName: string, link: string): Promise<any> {
@@ -574,7 +612,9 @@ export async function processTypesenseResults(
     title: string,
     session_id: string = "testing",
     linkHeader: string,
-    artifactTitle?: string
+    artifactTitle?: string,
+    dbName?: string,
+    mongoUri?: string
 ): Promise<ToolResponse> {
     logger.info(`Starting processTypesenseResults for tool: ${toolName}, session: ${session_id}`);
     
@@ -639,7 +679,9 @@ export async function processTypesenseResults(
 
         // Insert the data link to mongodb collection
         logger.info(`Inserting data link to MongoDB for ${toolName}, session: ${session_id}`);
-        await insertDataLinkToMongoDB(dataLink, linkHeader, session_id, imo || "", vesselName || "");
+        if (dbName && mongoUri) {
+            // await insertDataLinkToMongoDB(dataLink, linkHeader, session_id, imo || "", vesselName || "", dbName, mongoUri);
+        }
         logger.info(`Data link successfully inserted to MongoDB for ${toolName}`);
 
         // Format results in the standard structure
@@ -697,7 +739,9 @@ export async function processTypesenseExportResults(
     session_id: string,
     linkHeader: string,
     imo: string,
-    vesselName: string | null
+    vesselName: string | null,
+    dbName?: string,
+    mongoUri?: string
 ): Promise<ToolResponse> {
     try {
         // Process documents
@@ -717,7 +761,9 @@ export async function processTypesenseExportResults(
         const dataLink = await getDataLink(processedDocuments);
         
         // Insert the data link to mongodb collection
-        await insertDataLinkToMongoDB(dataLink, linkHeader, session_id, imo || "", vesselName || "");
+        if (dbName && mongoUri) {
+            // await insertDataLinkToMongoDB(dataLink, linkHeader, session_id, imo || "", vesselName || "", dbName, mongoUri);
+        }
 
         // Format results in the standard structure
         const formattedResults = {
@@ -865,20 +911,17 @@ export async function getFleetImoByName(fleetName: string): Promise<number | nul
  * @param fleetImo - IMO number of the fleet
  * @returns Promise<number[]> - Array of vessel IMO numbers
  */
-export async function getVesselImoListFromFleet(fleetImo: number): Promise<number[]> {
-    const mongoUri = getConfig().mongodbEtlDevDataUri || "";
-    const dbName = getConfig().mongodbEtlDevDataDbName || "";
-    
-    if (!mongoUri || !dbName) {
-      throw new Error('ETL database URI and name are required for fleet operations');
+export async function getVesselImoListFromFleet(fleetImo: number, dbName: string, mongoUri: string, collectionName: string = 'common_group_details'): Promise<number[]> {
+    if (!dbName || !mongoUri || !collectionName) {
+      throw new Error('Database name, MongoDB URI, and collection name are required for fleet operations');
     }
     
-    const client = new MongoClient(mongoUri);
+    const databaseManager = new DatabaseManager();
     
     try {
-      await client.connect();
-      const db = client.db(dbName);
-      const collection = db.collection('common_group_details');
+      await databaseManager.initializeDatabase(dbName, mongoUri);
+      const db = databaseManager.getDb();
+      const collection = db.collection(collectionName);
       
       const fleetDoc = await collection.findOne({ imo: fleetImo });
       
@@ -891,7 +934,7 @@ export async function getVesselImoListFromFleet(fleetImo: number): Promise<numbe
       logger.error(`Error fetching vessel IMO list for fleet ${fleetImo}:`, error);
       throw error;
     } finally {
-      await client.close();
+      await databaseManager.closeDatabase();
     }
   }
 
@@ -901,7 +944,9 @@ export async function getVesselImoListFromFleet(fleetImo: number): Promise<numbe
         bypassForSynergy?: boolean;
         bypassForAdminCompanies?: boolean;
         loggerTag?: string; // For identifying the context: "PMS", "Defect", etc.
-    }
+    },
+    dbName?: string,
+    mongoUri?: string
 ): Promise<string> {
     const { bypassForSynergy = false, bypassForAdminCompanies = false, loggerTag = "" } = options || {};
     const companyName = getConfig().companyName;
@@ -920,7 +965,7 @@ export async function getVesselImoListFromFleet(fleetImo: number): Promise<numbe
         return filter;
     }
 
-    const companyImos = await fetchCompanyImoNumbers(companyName);
+    const companyImos = dbName && mongoUri ? await fetchCompanyImoNumbers(companyName, dbName, mongoUri) : [];
     if (companyImos.length === 0) {
         logger.warn(`[${loggerTag}] No company IMO numbers configured. Skipping Typesense IMO filtering.`);
         return filter;
@@ -940,25 +985,25 @@ export async function getVesselImoListFromFleet(fleetImo: number): Promise<numbe
 
 // Specific wrappers
 
-export async function updateTypesenseFilterWithCompanyImos(filter: string): Promise<string> {
+export async function updateTypesenseFilterWithCompanyImos(filter: string, dbName?: string, mongoUri?: string): Promise<string> {
     return updateTypesenseFilterWithCompanyImosGeneric(filter, {
         bypassForSynergy: true,
         loggerTag: "General"
-    });
+    }, dbName, mongoUri);
 }
 
-export async function updateTypesenseFilterWithCompanyImosPms(filter: string): Promise<string> {
+export async function updateTypesenseFilterWithCompanyImosPms(filter: string, dbName?: string, mongoUri?: string): Promise<string> {
     return updateTypesenseFilterWithCompanyImosGeneric(filter, {
         bypassForAdminCompanies: true,
         loggerTag: "PMS"
-    });
+    }, dbName, mongoUri);
 }
 
-export async function updateTypesenseFilterWithCompanyImosDefect(filter: string): Promise<string> {
+export async function updateTypesenseFilterWithCompanyImosDefect(filter: string, dbName?: string, mongoUri?: string): Promise<string> {
     return updateTypesenseFilterWithCompanyImosGeneric(filter, {
         bypassForAdminCompanies: true,
         loggerTag: "Defect"
-    });
+    }, dbName, mongoUri);
 }
 
 /**
@@ -966,7 +1011,7 @@ export async function updateTypesenseFilterWithCompanyImosDefect(filter: string)
  * @param filter - Existing MongoDB filter object
  * @returns Updated filter object with IMO restrictions
  */
-export async function updateMongoFilterWithCompanyImos(filter: any): Promise<any> {
+export async function updateMongoFilterWithCompanyImos(filter: any, dbName?: string, mongoUri?: string): Promise<any> {
     const companyName = getConfig().companyName;
     
     // Skip filtering for admin companies
@@ -975,7 +1020,7 @@ export async function updateMongoFilterWithCompanyImos(filter: any): Promise<any
         return filter;
     }
     
-    const companyImos = await fetchCompanyImoNumbers(companyName);
+    const companyImos = dbName && mongoUri ? await fetchCompanyImoNumbers(companyName, dbName, mongoUri) : [];
     
     // If no IMO numbers configured, return original filter
     if (companyImos.length === 0) {
@@ -1001,7 +1046,7 @@ export async function updateMongoFilterWithCompanyImos(filter: any): Promise<any
  * @param pipeline - Existing MongoDB aggregation pipeline
  * @returns Updated pipeline with IMO restrictions
  */
-export async function updateMongoAggregationWithCompanyImos(pipeline: any[]): Promise<any[]> {
+export async function updateMongoAggregationWithCompanyImos(pipeline: any[], dbName?: string, mongoUri?: string): Promise<any[]> {
     const companyName = getConfig().companyName;
     
     // Skip filtering for admin companies
@@ -1010,7 +1055,7 @@ export async function updateMongoAggregationWithCompanyImos(pipeline: any[]): Pr
         return pipeline;
     }
     
-    const companyImos = await fetchCompanyImoNumbers(companyName);
+    const companyImos = dbName && mongoUri ? await fetchCompanyImoNumbers(companyName, dbName, mongoUri) : [];
     
     // If no IMO numbers configured, return original pipeline
     if (companyImos.length === 0) {
@@ -1041,7 +1086,7 @@ export async function updateMongoAggregationWithCompanyImos(pipeline: any[]): Pr
  * @param searchParams - Search parameters object
  * @returns Updated search parameters with IMO restrictions
  */
-export async function updateSearchParamsWithCompanyImos(searchParams: any): Promise<any> {
+export async function updateSearchParamsWithCompanyImos(searchParams: any, dbName?: string, mongoUri?: string): Promise<any> {
     const companyName = getConfig().companyName;
     
     // Skip filtering for admin companies
@@ -1050,7 +1095,7 @@ export async function updateSearchParamsWithCompanyImos(searchParams: any): Prom
         return searchParams;
     }
     
-    const companyImos = await fetchCompanyImoNumbers(companyName);
+    const companyImos = dbName && mongoUri ? await fetchCompanyImoNumbers(companyName, dbName, mongoUri) : [];
     
     // If no IMO numbers configured, return original params
     if (companyImos.length === 0) {
@@ -1078,7 +1123,7 @@ export async function updateSearchParamsWithCompanyImos(searchParams: any): Prom
  * @param imo - IMO number to check
  * @returns True if authorized, false otherwise
  */
-export async function isVesselAuthorizedForCompany(imo: string | number): Promise<boolean> {
+export async function isVesselAuthorizedForCompany(imo: string | number, dbName?: string, mongoUri?: string): Promise<boolean> {
     const companyName = getConfig().companyName;
     
     // Allow access for admin companies
@@ -1086,7 +1131,7 @@ export async function isVesselAuthorizedForCompany(imo: string | number): Promis
         return true;
     }
     
-    const companyImos = await fetchCompanyImoNumbers(companyName);
+    const companyImos = dbName && mongoUri ? await fetchCompanyImoNumbers(companyName, dbName, mongoUri) : [];
     
     // If no IMO numbers configured, deny access
     if (companyImos.length === 0) {
@@ -1104,7 +1149,7 @@ export async function isVesselAuthorizedForCompany(imo: string | number): Promis
  * Get authorized IMO numbers for the current company (PMS version)
  * @returns Array of authorized IMO numbers
  */
-export async function getAuthorizedImoNumbers(): Promise<string[]> {
+export async function getAuthorizedImoNumbers(dbName?: string, mongoUri?: string): Promise<string[]> {
     const companyName = getConfig().companyName;
     
     // For admin companies, return empty array (no restrictions)
@@ -1112,7 +1157,11 @@ export async function getAuthorizedImoNumbers(): Promise<string[]> {
         return [];
     }
     
-    return await fetchCompanyImoNumbers(companyName);
+    if (!dbName || !mongoUri) {
+        throw new Error('Database name and MongoDB URI are required');
+    }
+    
+    return await fetchCompanyImoNumbers(companyName, dbName, mongoUri);
 }
 
 /**
@@ -1120,9 +1169,9 @@ export async function getAuthorizedImoNumbers(): Promise<string[]> {
  * @param action - Action being performed
  * @param details - Additional details about the filtering
  */
-export async function logImoFilteringActivity(action: string, details: any = {}): Promise<void> {
+export async function logImoFilteringActivity(action: string, details: any = {}, dbName?: string, mongoUri?: string): Promise<void> {
     const companyName = getConfig().companyName;
-    const companyImos = await fetchCompanyImoNumbers(companyName);
+    const companyImos = dbName && mongoUri ? await fetchCompanyImoNumbers(companyName, dbName, mongoUri) : [];
     
     logger.info(`IMO filtering activity: ${action}`, {
         companyName,
@@ -1144,7 +1193,7 @@ export async function logImoFilteringActivity(action: string, details: any = {})
  * @returns Array of parsed and processed documents
  */
 export async function exportDataForImoListGeneric(
-    collectionName: string,
+    collectionName: string = 'vesselinfos',
     imoList: number[],
     startDate?: string,
     endDate?: string,
@@ -1284,52 +1333,39 @@ export async function exportSurveysForImoList(imoList: number[], startDate?: str
     );
 }
 
-type DatabaseContext = 'pms' | 'pms-etl' | 'pms-engine' | 'defect' | 'defect-secondary';
+// type DatabaseContext = 'pms' | 'pms-etl' | 'pms-engine' | 'defect' | 'defect-secondary';
 
-/**
- * Get MongoDB database instance by context
- * @param context - Determines the client and database name to use
- * @returns MongoDB Database instance
- */
-export async function getDatabaseInstance(context: DatabaseContext) {
-    if (context === 'pms-etl') {
-        const client = await getEtlDevClient();
-        return client.db(getEtlDevDbName());
-    }
+// /**
+//  * Get MongoDB database instance by context
+//  * @param context - Determines the client and database name to use
+//  * @returns MongoDB Database instance
+//  */
+// export async function getDatabaseInstance(context: DatabaseContext, dbName: string, mongoUri: string): Promise<DatabaseManager> {
+//     if (!dbName || !mongoUri) {
+//         throw new Error('Database name and MongoDB URI are required');
+//     }
 
-    const client = await getMongoClient();
+//     const databaseManager = new DatabaseManager();
+//     await databaseManager.initializeDatabase(dbName, mongoUri);
+//     return databaseManager;
+// }
 
-    const config = getConfig();
-    switch (context) {
-        case 'pms':
-        case 'defect':
-            return client.db(config.dbName);
+// export async function getPmsDatabase(dbName: string, mongoUri: string) {
+//     return getDatabaseInstance('pms', dbName, mongoUri);
+// }
 
-        case 'pms-engine':
-        case 'defect-secondary':
-            return client.db(config.secondaryDbName || config.dbName);
+// export async function getPmsEtlDatabase(dbName: string, mongoUri: string) {
+//     return getDatabaseInstance('pms-etl', dbName, mongoUri);
+// }
 
-        default:
-            throw new Error(`Unsupported database context: ${context}`);
-    }
-}
+// export async function getPmsEngineDataDatabase(dbName: string, mongoUri: string) {
+//     return getDatabaseInstance('pms-engine', dbName, mongoUri);
+// }
 
-export async function getPmsDatabase() {
-    return getDatabaseInstance('pms');
-}
+// export async function getDefectDatabase(dbName: string, mongoUri: string) {
+//     return getDatabaseInstance('defect', dbName, mongoUri);
+// }
 
-export async function getPmsEtlDatabase() {
-    return getDatabaseInstance('pms-etl');
-}
-
-export async function getPmsEngineDataDatabase() {
-    return getDatabaseInstance('pms-engine');
-}
-
-export async function getDefectDatabase() {
-    return getDatabaseInstance('defect');
-}
-
-export async function getDefectSecondaryDatabase() {
-    return getDatabaseInstance('defect-secondary');
-}
+// export async function getDefectSecondaryDatabase(dbName: string, mongoUri: string) {
+//     return getDatabaseInstance('defect-secondary', dbName, mongoUri);
+// }

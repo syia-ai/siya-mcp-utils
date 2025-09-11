@@ -1,4 +1,4 @@
-import { getMongoClient } from "./mongodb.js";
+import { DatabaseManager } from "./mongodb.js";
 import { getTypesenseClient } from "./typesense.js";
 import { getConfig } from "./config.js";
 import { ObjectId } from "mongodb";
@@ -282,19 +282,24 @@ export async function getVesselDetails(query: string): Promise<any> {
 }
 
 // Helper to push casefile to Typesense
-export async function pushToTypesense(res: any, action: 'create' | 'update' | 'upsert' | 'emplace'): Promise<any> {
+export async function pushToTypesense(res: any, action: 'create' | 'update' | 'upsert' | 'emplace', dbName: string, mongoUri: string, collectionName: string = 'casefiles'): Promise<any> {
     const id = res.id || res._id?.toString();
     const casefileTxt = res.casefile;
     const summaryTxt = res.summary;
     const embeddingText = `Below casefile ${casefileTxt} with following summary ${summaryTxt} `;
     const link = await generateCasefileWeblink(id);
 
+    if (!dbName || !mongoUri || !collectionName) {
+        throw new Error('Database name, MongoDB URI, and collection name are required');
+    }
+
     // Update the casefile in MongoDB with the link
-    const config = getConfig();
-    const mongoClient = await getMongoClient(config.mongoUri);
-    const db = mongoClient.db(config.dbName);
-    const collection = db.collection("casefiles");
+    const databaseManager = new DatabaseManager();
+    await databaseManager.initializeDatabase(dbName, mongoUri);
+    const db = databaseManager.getDb();
+    const collection = db.collection(collectionName);
     await collection.updateOne({ _id: id }, { $set: { link } });
+    await databaseManager.closeDatabase();
 
     // Prepare Typesense data
     const createdAt = res.createdAt instanceof Date ? Math.floor(res.createdAt.getTime() / 1000) : (typeof res.createdAt === 'number' ? res.createdAt : Date.now() / 1000);

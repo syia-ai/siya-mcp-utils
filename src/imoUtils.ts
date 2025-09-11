@@ -1,5 +1,5 @@
 import { logger } from './logger.js';
-import { getEtlDevDataClient, getEtlDevDataDbName } from './mongodb.js';
+import { DatabaseManager } from './mongodb.js';
 import { getConfig } from './config.js';
 
 /**
@@ -7,16 +7,22 @@ import { getConfig } from './config.js';
  * @param companyName The name of the company to fetch IMO numbers for
  * @returns Array of IMO numbers as strings
  */
-export async function fetchCompanyImoNumbers(companyName: string): Promise<string[]> {
+export async function fetchCompanyImoNumbers(companyName: string, dbName: string, mongoUri: string, collectionName: string = 'common_group_details'): Promise<string[]> {
+  const databaseManager = new DatabaseManager();
+  
   try {
     logger.info(`Fetching IMO numbers for company: ${companyName}`);
     
+    if (!dbName || !mongoUri || !collectionName) {
+      throw new Error('Database name, MongoDB URI, and collection name are required');
+    }
+    
     // Get ETL Dev MongoDB client
-    const client = await getEtlDevDataClient();
-    const db = client.db(getEtlDevDataDbName());
+    await databaseManager.initializeDatabase(dbName, mongoUri);
+    const db = databaseManager.getDb();
     
     // Query the common_group_details collection for IMO numbers belonging to the company
-    const collection = db.collection('common_group_details');
+    const collection = db.collection(collectionName);
     
     const result = await collection.findOne(
       { groupName: companyName },
@@ -39,6 +45,8 @@ export async function fetchCompanyImoNumbers(companyName: string): Promise<strin
   } catch (error) {
     logger.error(`Error fetching IMO numbers for company ${companyName}:`, error);
     throw error;
+  } finally {
+    await databaseManager.closeDatabase();
   }
 }
 
@@ -60,7 +68,7 @@ export function shouldBypassImoFiltering(companyName: string): boolean {
  * @param companyName - Company name to fetch IMO numbers for
  * @returns Promise that resolves to boolean indicating if IMO is valid
  */
-export async function isValidImoForCompany(imoNumber: string | number, companyName: string): Promise<boolean> {
+export async function isValidImoForCompany(imoNumber: string | number, companyName: string, dbName?: string, mongoUri?: string): Promise<boolean> {
   try {
     // Convert to string for consistent comparison
     const imoStr = String(imoNumber);
@@ -71,7 +79,12 @@ export async function isValidImoForCompany(imoNumber: string | number, companyNa
     }
     
     // Check if IMO is in company's authorized list
-    const companyImos = await fetchCompanyImoNumbers(companyName);
+    if (!dbName || !mongoUri) {
+      // If no database parameters provided, allow all valid IMO numbers
+      return true;
+    }
+    
+    const companyImos = await fetchCompanyImoNumbers(companyName, dbName, mongoUri, 'common_group_details');
     if (companyImos.length === 0) {
       // If no company IMOs are set, allow all valid IMO numbers
       return true;
@@ -88,12 +101,17 @@ export async function isValidImoForCompany(imoNumber: string | number, companyNa
  * Initialize IMO cache for a company
  * @param companyName - Name of the company to initialize cache for
  */
-export async function initializeImoCache(companyName: string): Promise<void> {
+export async function initializeImoCache(companyName: string, dbName?: string, mongoUri?: string): Promise<void> {
   try {
     logger.info(`Initializing IMO cache for company: ${companyName}`);
     
+    if (!dbName || !mongoUri) {
+      logger.warn('Database parameters not provided, skipping IMO cache initialization');
+      return;
+    }
+    
     // Fetch company IMOs and cache them
-    const imos = await fetchCompanyImoNumbers(companyName);
+    const imos = await fetchCompanyImoNumbers(companyName, dbName, mongoUri, 'common_group_details');
     
     // For now, just log the IMOs found
     // In a production system, you might want to store this in memory or a cache

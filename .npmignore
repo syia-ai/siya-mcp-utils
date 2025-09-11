@@ -1,5 +1,6 @@
 # # Source files (not needed in published package)
-# src/
+src/
+test/
 # *.ts
 # !*.d.ts
 
@@ -17,7 +18,7 @@
 !package.json
 !dist/
 !scripts/
-!src/
+# !src/
 !README.md
 !tsconfig.json
 

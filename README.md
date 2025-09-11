@@ -20,6 +20,11 @@ import {
   markdownToHtmlLink,
   parseDocumentLink
 } from 'syia-mcp-utils';
+
+// Example usage of fetchQADetails with database connection
+const client = await getMongoClient();
+const db = client.db('your-database-name');
+const result = await fetchQADetails('1234567', 1, db, 'vesselinfos');
 ```
 
 ## Available Utilities
