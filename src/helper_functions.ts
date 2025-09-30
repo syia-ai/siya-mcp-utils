@@ -66,7 +66,9 @@ export async function fetchQADetails(
 
         // Process answer with component data if it exists
         if (res.answer) {
-            res.answer = await addComponentData(res.answer, imo, vesselInfoDbName, vesselInfoMongoUri);
+            const vesselComponentsDbName = process.env.vesselComponentsDbName || vesselInfoDbName;
+            const vesselComponentsMongoUri = process.env.vesselComponentsMongoUri || vesselInfoMongoUri;
+            res.answer = await addComponentData(res.answer, imo, vesselComponentsDbName, vesselComponentsMongoUri);
         }
 
         // Get vessel QnA snapshot link
@@ -115,10 +117,10 @@ export async function fetchQADetailsAndCreateResponse(
         // Get artifact data
         const artifactData = await getArtifact(functionName, link);
 
-        // Create content responses
+        // Create content responses with processed answer
         const content: TextContent = {
             type: "text",
-            text: JSON.stringify(result, null, 2)
+            text: result.answer || "No data available"
         };
 
         const artifact: TextContent = {
@@ -140,7 +142,7 @@ export async function getComponentData(componentId: string, vesselComponentsDbNa
     const match = componentId.match(/^(\d+)_(\d+)_(\d+)$/);
     if (!match) {
         return `⚠️ Invalid component_id format: ${componentId}`;
-    }
+    } 
 
     if (!vesselComponentsDbName || !vesselComponentsMongoUri || !collectionName) {
         throw new Error('Database name, MongoDB URI, and collection name are required');
@@ -165,9 +167,17 @@ export async function getComponentData(componentId: string, vesselComponentsDbNa
             return "No data found in the table component";
         }
 
+        if (!doc.data.headers || !Array.isArray(doc.data.headers)) {
+            return "No headers found in the table component";
+        }
+
+        if (!doc.data.body || !Array.isArray(doc.data.body)) {
+            return "No body data found in the table component";
+        }
+
         // Extract headers excluding lineitem
         const headers = doc.data.headers
-            .filter((h: any) => h.name !== "lineitem")
+            .filter((h: any) => h && h.name !== "lineitem")
             .map((h: any) => h.name);
 
         const rows = doc.data.body;
@@ -178,14 +188,14 @@ export async function getComponentData(componentId: string, vesselComponentsDbNa
 
         for (const row of rows) {
             const formattedRow = row
-                .filter((cell: any) => !cell.lineitem) // Exclude lineitem
+                .filter((cell: any) => cell && !cell.lineitem) // Exclude lineitem and null cells
                 .map((cell: any) => {
-                    if (cell.value && cell.link) {
+                    if (cell && cell.value && cell.link) {
                         return `[${cell.value}](${cell.link})`;
-                    } else if (cell.status && cell.color) {
+                    } else if (cell && cell.status && cell.color) {
                         return cell.status;
                     }
-                    return String(cell);
+                    return cell ? String(cell) : '';
                 });
             md += "| " + formattedRow.join(" | ") + " |\n";
         }
@@ -203,17 +213,23 @@ export async function addComponentData(answer: string, imo: string, vesselCompon
     const pattern = /httpsdev\.syia\.ai\/chat\/ag-grid-table\?component=(\d+_\d+)/g;
     const matches = Array.from(answer.matchAll(pattern));
     
+    logger.info(`addComponentData called with IMO: ${imo}, matches found: ${matches.length}`);
+    logger.info(`Answer contains ag-grid URL: ${answer.includes('ag-grid-table')}`);
+    
     let result = answer;
     for (const match of matches) {
         const component = match[1];
+        logger.info(`Processing component: ${component}, full match: ${match[0]}`);
         try {
             const replacement = await getComponentData(`${component}_${imo}`, vesselComponentsDbName, vesselComponentsMongoUri, 'vesselinfocomponents');
+            logger.info(`Component data retrieved, length: ${replacement.length}`);
             result = result.replace(match[0], replacement);
         } catch (error) {
             logger.error('Error replacing component data:', error);
         }
     }
     
+    logger.info(`addComponentData returning result, length: ${result.length}`);
     return result;
 }
 

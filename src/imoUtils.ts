@@ -1,6 +1,8 @@
 import { logger } from './logger.js';
 import { DatabaseManager } from './mongodb.js';
 import { getConfig } from './config.js';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { join } from 'path';
 
 /**
  * Fetch IMO numbers for a specific company from MongoDB
@@ -124,4 +126,130 @@ export async function initializeImoCache(companyName: string, dbName?: string, m
     logger.error(`Error initializing IMO cache for company ${companyName}:`, error);
     // Don't throw error, just log it - cache initialization failure shouldn't stop the server
   }
+}
+
+// ============================================================================
+// CACHE MANAGEMENT FUNCTIONS (for backward compatibility)
+// ============================================================================
+
+/**
+ * Companies that should skip validation entirely
+ */
+const SKIP_VALIDATION_COMPANIES = ['synergy', 'development', 'test'];
+
+// File path setup
+const DATA_DIR = join(process.cwd(), 'data');
+const CACHE_FILENAME = 'company-imos.json';
+const CACHE_FILE = join(DATA_DIR, CACHE_FILENAME);
+
+// Types
+interface CacheData {
+  companyName: string;
+  imoNumbers: string[];
+  lastUpdated: string;
+}
+
+// In-memory storage
+let companyImoCache: CacheData | null = null;
+
+/**
+ * Ensure data directory exists
+ */
+function ensureDataDirectory(): void {
+  if (!existsSync(DATA_DIR)) {
+    mkdirSync(DATA_DIR, { recursive: true });
+    logger.debug('Created data directory for IMO cache');
+  }
+}
+
+/**
+ * Get cached company IMO numbers from memory
+ */
+function getCompanyImoNumbers(): string[] {
+  return companyImoCache?.imoNumbers || [];
+}
+
+/**
+ * Load cached IMO numbers from file
+ */
+export function loadCachedImos(): string[] {
+  try {
+    if (!existsSync(CACHE_FILE)) {
+      logger.debug('IMO cache file does not exist');
+      return [];
+    }
+    
+    const data = readFileSync(CACHE_FILE, 'utf8');
+    const cacheData: CacheData = JSON.parse(data);
+    
+    // Validate cache structure
+    if (!cacheData?.imoNumbers || !Array.isArray(cacheData.imoNumbers)) {
+      logger.warn('Invalid cache file structure, ignoring cached data');
+      return [];
+    }
+    
+    // Update in-memory cache if valid
+    companyImoCache = cacheData;
+    
+    logger.debug(`Loaded ${cacheData.imoNumbers.length} IMO numbers from cache file`);
+    return cacheData.imoNumbers;
+    
+  } catch (error) {
+    logger.warn('Failed to load cached IMOs, cache file may be corrupted:', error);
+    return [];
+  }
+}
+
+/**
+ * Save IMO numbers to cache file
+ */
+export function saveCachedImos(imos: string[], companyName: string): void {
+  try {
+    ensureDataDirectory();
+    
+    const cacheData: CacheData = {
+      companyName,
+      imoNumbers: imos,
+      lastUpdated: new Date().toISOString()
+    };
+    
+    writeFileSync(CACHE_FILE, JSON.stringify(cacheData, null, 2), 'utf8');
+    logger.info(`Successfully cached ${imos.length} IMO numbers to file`);
+    
+  } catch (error) {
+    logger.error('Failed to save IMO cache to file:', error);
+  }
+}
+
+/**
+ * Check if company should skip IMO validation (e.g., for development/testing)
+ */
+export function shouldSkipImoValidation(companyName: string): boolean {
+  return SKIP_VALIDATION_COMPANIES.includes(companyName.toLowerCase());
+}
+
+/**
+ * Get company IMOs with intelligent fallback strategy
+ */
+export function getCompanyImosWithFallback(): string[] {
+  // Try in-memory cache first (fastest)
+  let imos = getCompanyImoNumbers();
+  
+  // Fallback to file cache if memory is empty
+  if (imos.length === 0) {
+    imos = loadCachedImos();
+    if (imos.length > 0) {
+      logger.info(`Using cached IMO numbers from file (${imos.length} IMOs)`);
+    }
+  }
+  
+  return imos;
+}
+
+/**
+ * Clear all cached data (for testing/reset purposes)
+ */
+export function clearCache(): void {
+  companyImoCache = null;
+  logger.debug('Cleared in-memory IMO cache');
 } 
