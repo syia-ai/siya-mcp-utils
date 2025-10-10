@@ -14,6 +14,11 @@ export async function fetchQADetails(
     vesselInfoMongoUri: string,
     collectionName: string = 'vesselinfos'
 ): Promise<any> {
+    // Debug logging
+    logger.info(`fetchQADetails called with IMO: ${imo}, qaId: ${qaId}`);
+    logger.info(`vesselInfoDbName: ${vesselInfoDbName}`);
+    logger.info(`vesselInfoMongoUri: ${vesselInfoMongoUri ? 'Set' : 'Not set'}`);
+    
     const databaseManager = new DatabaseManager();
     
     try {
@@ -118,9 +123,13 @@ export async function fetchQADetailsAndCreateResponse(
         const artifactData = await getArtifact(functionName, link);
 
         // Create content responses with processed answer
+        logger.info(`Link value: ${link}, type: ${typeof link}, is null: ${link === null}, is undefined: ${link === undefined}`);
+        logger.info(`Result answer: ${result.answer}`);
+        const artifactLinkText = link ? `\n\nArtifact Link: ${link}` : "";
+        logger.info(`Artifact link text: "${artifactLinkText}"`);
         const content: TextContent = {
             type: "text",
-            text: result.answer || "No data available"
+            text: `${result.answer || "No data available"}${artifactLinkText}`
         };
 
         const artifact: TextContent = {
@@ -1385,3 +1394,400 @@ export async function exportSurveysForImoList(imoList: number[], startDate?: str
 // export async function getDefectSecondaryDatabase(dbName: string, mongoUri: string) {
 //     return getDatabaseInstance('defect-secondary', dbName, mongoUri);
 // }
+
+export async function combined_mongotools_with_single_category_mapping(
+    args: any,
+    allQuestions: number[] = [7, 30, 112, 116, 128, 177, 261],
+    toolNamePrefix: string = "combined_mongotools_single_category",
+    questionMappings: { [key: number]: string } = {
+        7: "Aux Engine Maintenance Status Summary",
+        30: "Compressor Maintenance Status Summary", 
+        112: "Main Engine Maintenance Status Summary",
+        116: "PMS Summary",
+        128: "Purifier Maintenance Status Summary",
+        177: "Critical Spare List Compliance",
+        261: "Saturday routine jobs (Weekly LSA/FFA jobs) as per Ship Palm (ERP system)"
+    },
+    qaDbName: string = '',
+    qaMongoUri: string = ''
+): Promise<ToolResponse> {
+    logger.info("combined_mongotools_with_single_category_mapping called", args);
+    
+    try {
+        const { imo, questionNo } = args;
+
+        // Early validation with destructuring
+        if (!imo) throw new Error("IMO number is required");
+
+        // Use provided questions or default to all questions
+        const questionsToFetch = questionNo ? [questionNo] : allQuestions;
+
+        // Fast validation using Set for O(1) lookup
+        const ALLOWED_QUESTION_NOS = new Set(allQuestions);
+        if (questionNo && !ALLOWED_QUESTION_NOS.has(questionNo)) {
+            return [{
+                type: "text",
+                text: `Invalid questionNo: ${questionNo}. Allowed values are: ${Array.from(ALLOWED_QUESTION_NOS).join(', ')}`
+            }];
+        }
+
+        // Use provided question mappings and database connection parameters
+
+
+        // Create base summary text
+        const summaryText = `${questionNo ? ` - ${questionMappings[questionNo]?.toUpperCase()}` : ' - Complete Overview'}\n\n` +
+            `**Vessel IMO:** ${imo}\n` +
+            `**Questions Fetched:** ${questionsToFetch.join(', ')}\n\n`;
+
+        const allResponses: ToolResponse = [];
+
+        // Process questions (single or multiple)
+        if (questionsToFetch.length === 1) {
+            // Single question - use existing logic
+            const qNo = questionsToFetch[0];
+            const questionDescription = questionMappings[qNo];
+            
+            logger.info(`Fetching ${questionDescription} for vessel IMO: ${imo}`);
+
+            const result = await fetchQADetailsAndCreateResponse(
+                imo,
+                qNo,
+                `${toolNamePrefix}_q${qNo}`,
+                questionDescription.toLowerCase(),
+                "testing", // sessionId
+                qaDbName,
+                qaMongoUri,
+                'vesselinfos'
+            );
+
+            // Create summary for single question response (following survey_mcp_server pattern)
+            let vesselName = "";
+            let singleSummaryText = summaryText + `**Question Number:** ${qNo}\n`;
+            singleSummaryText += `**Description:** ${questionDescription}\n\n`;
+
+            // Extract vessel name from result if available
+            if (result && result.length > 0 && result[0].text) {
+                const text = String(result[0].text);
+                const vesselNameMatch = text.match(/\*\*Vessel Name:\*\*\s*([^\n]+)/);
+                if (vesselNameMatch) {
+                    vesselName = vesselNameMatch[1].trim();
+                }
+            }
+
+            // Add vessel name to summary if found
+            if (vesselName) {
+                singleSummaryText += `**Vessel Name:** ${vesselName}\n\n`;
+            }
+
+            // Extract markdown content from the answer field
+            let markdownContent = "";
+            if (result && result.length > 0 && result[0].text) {
+                const text = String(result[0].text);
+                // Look for the answer field in the text
+                const answerMatch = text.match(/## Question \d+\n\n([\s\S]*?)(?=\n## |$)/);
+                if (answerMatch) {
+                    markdownContent = answerMatch[1].trim();
+                } else {
+                    // If no specific answer section found, use the entire text
+                    markdownContent = text;
+                }
+            }
+
+            singleSummaryText += `## Question ${qNo}\n\n`;
+            singleSummaryText += markdownContent;
+
+            // Return summary text with artifacts
+            const summaryContent: TextContent = {
+                type: "text",
+                text: singleSummaryText
+            };
+
+            const finalResult: ToolResponse = [summaryContent];
+            if (result.length > 1) {
+                finalResult.push(result[1]); // Add artifact if exists
+            }
+
+            return finalResult;
+        } else {
+            // Multiple questions - fetch all questions
+            logger.info(`Fetching all questions (${questionsToFetch.length}) for vessel IMO: ${imo}`);
+
+            // Parallel processing for multiple questions
+            const promises = questionsToFetch.map(qNo => 
+                fetchQADetailsAndCreateResponse(
+                    imo, qNo, `${toolNamePrefix}_q${qNo}`,
+                    questionMappings[qNo]?.toLowerCase() || `question_${qNo}`, 
+                    "testing", qaDbName, qaMongoUri, 'vesselinfos'
+                ).catch(error => {
+                    logger.warn(`Failed to fetch data for question ${qNo}:`, error);
+                    return null;
+                })
+            );
+
+            const results = await Promise.allSettled(promises);
+            let combinedSummaryText = summaryText;
+
+            // Process each result
+            results.forEach((result, index) => {
+                const qNo = questionsToFetch[index];
+                const questionDescription = questionMappings[qNo];
+                
+                if (result.status === 'fulfilled' && result.value) {
+                    const response = result.value;
+                    
+                    // Extract vessel name from first successful result
+                    if (index === 0 && response.length > 0 && response[0].text) {
+                        const text = String(response[0].text);
+                        const vesselNameMatch = text.match(/\*\*Vessel Name:\*\*\s*([^\n]+)/);
+                        if (vesselNameMatch) {
+                            combinedSummaryText += `**Vessel Name:** ${vesselNameMatch[1].trim()}\n\n`;
+                        }
+                    }
+
+                    // Extract markdown content
+                    let markdownContent = "";
+                    if (response.length > 0 && response[0].text) {
+                        const text = String(response[0].text);
+                        const answerMatch = text.match(/## Question \d+\n\n([\s\S]*?)(?=\n## |$)/);
+                        if (answerMatch) {
+                            markdownContent = answerMatch[1].trim();
+                        } else {
+                            markdownContent = text;
+                        }
+                    }
+
+                    combinedSummaryText += `## Question ${qNo} - ${questionDescription}\n\n`;
+                    combinedSummaryText += markdownContent + "\n\n";
+
+                    // Add artifacts
+                    if (response.length > 1) {
+                        allResponses.push(response[1]);
+                    }
+                } else {
+                    combinedSummaryText += `## Question ${qNo} - ${questionDescription}\n\n`;
+                    combinedSummaryText += `*Error fetching data for this question*\n\n`;
+                }
+            });
+
+            // Return combined summary
+            const summaryContent: TextContent = {
+                type: "text",
+                text: combinedSummaryText
+            };
+
+            return [summaryContent, ...allResponses];
+        }
+
+    } catch (error) {
+        logger.error(`Error in ${toolNamePrefix}`, { error });
+        return [{
+            type: "text",
+            text: `Error retrieving ${toolNamePrefix} information: ${error instanceof Error ? error.message : String(error)}`
+        }];
+    }
+}
+
+export async function combined_mongotools_with_grouped_category_mapping(
+    args: any,
+    allowedCategories: string[] = [
+        "main_engine_performance",
+        "auxiliary_engine_performance", 
+        "lubrication_analysis",
+        "systems_equipment",
+        "inventory_supplies",
+        "compliance_reporting"
+    ],
+    categoryMappings: { [key: string]: number[] } = {
+        "main_engine_performance": [67, 68, 69, 70, 76],
+        "auxiliary_engine_performance": [1, 2, 3, 4, 8, 71, 77],
+        "lubrication_analysis": [72, 74],
+        "systems_equipment": [10, 73, 78, 231],
+        "inventory_supplies": [75, 79],
+        "compliance_reporting": [65, 66, 80]
+    },
+    toolNamePrefix: string = "combined_mongotools_grouped_category",
+    qaDbName: string = '',
+    qaMongoUri: string = ''
+): Promise<ToolResponse> {
+    logger.info("combined_mongotools_with_grouped_category_mapping called", args);
+    
+    try {
+        const { imo, category, questionNo } = args;
+
+        // Early validation with destructuring
+        if (!imo) throw new Error("IMO number is required");
+        if (!category) throw new Error("Category is required");
+
+        // Use provided parameters
+
+        // Fast validation using Set
+        const allowedCategoriesSet = new Set(allowedCategories);
+        if (!allowedCategoriesSet.has(category)) {
+            return [{
+                type: "text",
+                text: `Invalid category: ${category}. Allowed values are: ${allowedCategories.join(', ')}`
+            }];
+        }
+
+        const validQuestions = categoryMappings[category];
+        if (!validQuestions) {
+            return [{
+                type: "text",
+                text: `No questions found for category: ${category}`
+            }];
+        }
+
+        // Determine questions to fetch
+        const questionsToFetch = questionNo 
+            ? (validQuestions.includes(questionNo) ? [questionNo] : null)
+            : validQuestions;
+
+        if (!questionsToFetch) {
+            return [{
+                type: "text",
+                text: `Question ${questionNo} not available in category '${category}'. Valid questions for this category are: ${validQuestions.join(', ')}`
+            }];
+        }
+
+        logger.info(`Fetching grouped category mapping information for category: ${category}, questionNo: ${questionNo || 'all'}, vessel IMO: ${imo}`);
+
+        // Use provided database connection parameters
+
+        // Pre-build summary template for efficiency
+        const categoryDisplay = category.replace(/_/g, ' ').toUpperCase();
+        const questionsList = questionsToFetch.join(', ');
+        
+        let vesselName = "";
+        const summaryParts: string[] = [
+            '',
+            `**Vessel IMO:** ${imo}`,
+            `**Category:** ${category}`,
+            `**Questions Fetched:** ${questionsList}`,
+            ''
+        ];
+
+        const allResponses: ToolResponse = [];
+
+        // Parallel processing for multiple questions (if more than 1)
+        if (questionsToFetch.length > 1) {
+            const promises = questionsToFetch.map(qNo => 
+                fetchQADetailsAndCreateResponse(
+                    imo, qNo, `${toolNamePrefix}_q${qNo}`,
+                    `${category}`, "testing", qaDbName, qaMongoUri, 'vesselinfos'
+                ).catch(error => {
+                    logger.warn(`Failed to fetch data for question ${qNo}:`, error);
+                    return null;
+                })
+            );
+
+            const responses = await Promise.allSettled(promises);
+            
+            responses.forEach((result, index) => {
+                if (result.status === 'fulfilled' && result.value) {
+                    const response = result.value;
+                    const qNo = questionsToFetch[index];
+                    
+                    // Add artifact
+                    if (response.length > 1) {
+                        allResponses.push(response[1]);
+                    }
+                    
+                    // Add content to summary (extract markdown from JSON)
+                    if (response.length > 0 && response[0].type === 'text') {
+                        const text = String(response[0].text);
+                        let content = text;
+                        try {
+                            const parsedContent = JSON.parse(text);
+                            content = parsedContent.answer || text;
+                        } catch (e) {
+                            // Keep original content if not JSON
+                        }
+                        summaryParts.push(`## Question ${qNo}`, '', content, '', '---', '');
+                    }
+                    
+                    // Extract vessel name from first successful response
+                    if (!vesselName && response.length > 0) {
+                        const text = String(response[0].text);
+                        try {
+                            const parsedContent = JSON.parse(text);
+                            vesselName = parsedContent.vesselName || "";
+                        } catch (e) {
+                            // Ignore parsing errors
+                        }
+                    }
+                }
+            });
+        } else {
+            // Single question - sequential processing
+            const qNo = questionsToFetch[0];
+            try {
+                const response = await fetchQADetailsAndCreateResponse(
+                    imo, qNo, `${toolNamePrefix}_q${qNo}`,
+                    `${category}`, "testing", qaDbName, qaMongoUri, 'vesselinfos'
+                );
+                
+                // Add artifact
+                if (response.length > 1) {
+                    allResponses.push(response[1]);
+                }
+                
+                // Add content to summary (extract markdown from JSON)
+                if (response.length > 0 && response[0].type === 'text') {
+                    const text = String(response[0].text);
+                    let content = text;
+                    try {
+                        const parsedContent = JSON.parse(text);
+                        content = parsedContent.answer || text;
+                    } catch (e) {
+                        // Keep original content if not JSON
+                    }
+                    summaryParts.push(`## Question ${qNo}`, '', content, '', '---', '');
+                }
+                
+                // Extract vessel name
+                if (response.length > 0) {
+                    const text = String(response[0].text);
+                    try {
+                        const parsedContent = JSON.parse(text);
+                        vesselName = parsedContent.vesselName || "";
+                    } catch (e) {
+                        // Ignore parsing errors
+                    }
+                }
+            } catch (error) {
+                logger.warn(`Failed to fetch data for question ${qNo}:`, error);
+            }
+        }
+
+        // Handle no results
+        if (allResponses.length === 0) {
+            return [{
+                type: "text",
+                text: `No grouped category mapping information found for category: ${category}`
+            }];
+        }
+
+        // Add vessel name to summary if found
+        if (vesselName) {
+            summaryParts[2] = `**Vessel IMO:** ${imo}`;
+            summaryParts.splice(3, 0, `**Vessel Name:** ${vesselName}`);
+        }
+
+        // Build final response efficiently
+        const summaryText = summaryParts.join('\n');
+        const finalResult: ToolResponse = [{
+            type: "text",
+            text: summaryText
+        }];
+        
+        finalResult.push(...allResponses);
+        return finalResult;
+
+    } catch (error) {
+        logger.error(`Error in ${toolNamePrefix}`, { error });
+        return [{
+            type: "text",
+            text: `Error retrieving ${toolNamePrefix} information: ${error instanceof Error ? error.message : String(error)}`
+        }];
+    }
+}
