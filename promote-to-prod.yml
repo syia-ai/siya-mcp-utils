@@ -1,0 +1,83 @@
+name: Promote to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to promote to production (e.g., 1.0.19)'
+        required: true
+        type: string
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://github.com/syia-ai/company-docs-dms-mcp-server/packages
+    permissions:
+      packages: write
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@syia-ai'
+
+      - name: Configure npm authentication
+        run: |
+          echo "@syia-ai:registry=https://npm.pkg.github.com" >> ~/.npmrc
+          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> ~/.npmrc
+          echo "always-auth=true" >> ~/.npmrc
+
+      - name: Verify version exists
+        run: |
+          echo "Checking if version ${{ github.event.inputs.version }} exists..."
+          npm view @syia-ai/company-docs-dms-mcp-server@${{ github.event.inputs.version }} version || {
+            echo "❌ Error: Version ${{ github.event.inputs.version }} does not exist in the registry"
+            exit 1
+          }
+
+          echo "Checking current dist-tags..."
+          npm view @syia-ai/company-docs-dms-mcp-server dist-tags
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote to latest
+        run: |
+          echo "Promoting @syia-ai/company-docs-dms-mcp-server@${{ github.event.inputs.version }} to latest..."
+          npm dist-tag add @syia-ai/company-docs-dms-mcp-server@${{ github.event.inputs.version }} latest
+
+          echo ""
+          echo "Updated dist-tags:"
+          npm view @syia-ai/company-docs-dms-mcp-server dist-tags
+
+          echo ""
+          echo "✅ Successfully promoted to production (latest tag)"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create promotion summary
+        run: |
+          echo "🚀 Version ${{ github.event.inputs.version }} Promoted to Production!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📦 Package Information" >> $GITHUB_STEP_SUMMARY
+          echo "- **Package**: \`@syia-ai/company-docs-dms-mcp-server\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: \`${{ github.event.inputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tags**: \`latest\` (production), \`dev\` (development)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Promoted by**: @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📥 Production Installation" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "# Using latest tag (production)" >> $GITHUB_STEP_SUMMARY
+          echo "npx @syia-ai/company-docs-dms-mcp-server@latest" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# Using specific version" >> $GITHUB_STEP_SUMMARY
+          echo "npx @syia-ai/company-docs-dms-mcp-server@${{ github.event.inputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔄 Rollback Instructions" >> $GITHUB_STEP_SUMMARY
+          echo "If needed, you can rollback by promoting a previous version:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "npm dist-tag add @syia-ai/company-docs-dms-mcp-server@<previous-version> latest" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
