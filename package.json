@@ -1,0 +1,40 @@
+{
+  "name": "@syia-ai/siya-mcp-utils",
+  "version": "1.0.0",
+  "description": "Shared utility functions for MCP servers",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node build/index.js"
+  },
+  "keywords": [
+    "utils",
+    "utilities",
+    "mcp",
+    "purchase"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.18.1",
+    "mongodb": "^6.17.0",
+    "typesense": "^2.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.2",
+    "typescript": "^5.9.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syia-ai/siya-mcp-utils.git"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "@syia-ai:registry": "https://npm.pkg.github.com"
+  },
+  "files": [
+    "build"
+  ]
+}
