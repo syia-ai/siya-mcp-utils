@@ -1,7 +1,7 @@
 import { MongoClient } from "mongodb";
 import { TextContent } from "@modelcontextprotocol/sdk/types.js";
 import { updateTypesenseFilterWithCompanyImos, isValidImoForCompany, isValidVesselImoForCompany, isValidFleetImoForCompany, filterImoListByCompany } from "./company-filtering.js";
-import { getTypesenseClient } from "./typesense.js";
+import { getTypesenseClient, type TypesenseConfig } from "./typesense.js";
 
 export async function getComponentData(componentId: string, vesselComponentsDbName: string, vesselComponentsMongoUri: string, collectionName: string = 'vesselinfocomponents'): Promise<string> {
     const match = componentId.match(/^(\d+)_(\d+)_(\d+)$/);
@@ -91,15 +91,27 @@ export async function addComponentData(answer: string, imo: string, vesselCompon
     return result;
 }
 
-export async function getVesselQnASnapshot(imo: string, questionNo: string): Promise<any> {
+export async function getVesselQnASnapshot(
+    imo: string,
+    questionNo: string,
+    apiKey: string,
+    baseUrl: string = 'https://dev-api.siya.com'
+): Promise<any> {
     try {
-        const raw_snapshotUrl = process.env.SNAPSHOT_URL;
-        // API endpoint
-        const snapshotUrl = `${raw_snapshotUrl}/${imo}/${questionNo}`;
+        // Validate inputs
+        if (!imo || !questionNo) {
+            throw new Error('IMO and question number are required');
+        }
 
-        const raw_jwtToken = process.env.JWT_TOKEN;
+        if (!apiKey) {
+            throw new Error('SIYA API key is required');
+        }
+
+        // API endpoint
+        const snapshotUrl = `${baseUrl}/v1.0/vessel-info/qna-snapshot/${imo}/${questionNo}`;
+
         // Authentication token
-        const jwtToken = `Bearer ${raw_jwtToken}`;
+        const jwtToken = `Bearer ${apiKey}`;
 
         // Headers for the request
         const headers = {
@@ -112,24 +124,19 @@ export async function getVesselQnASnapshot(imo: string, questionNo: string): Pro
         });
 
         if (!response.ok) {
-            return {
-                content: [{ type: "text", text: `Error in getVesselQnASnapshot: HTTP ${response.status} - ${response.statusText}` }],
-                isError: true
-            };
+            throw new Error(`HTTP error! status: ${response.status}`);
         }
 
-        const data = await response.json();
+        const data = await response.json() as any;
 
         // Return resultData if it exists, otherwise return the full response
-        if (data && typeof data === 'object' && "resultData" in data) {
+        if (data && "resultData" in data && typeof data.resultData === 'string') {
             return data.resultData;
         }
         return data;
     } catch (error: any) {
-        return {
-            content: [{ type: "text", text: `Error in getVesselQnASnapshot: ${error.message}` }],
-            isError: true
-        };
+        console.error(`Error fetching vessel QnA snapshot for IMO ${imo}, Question ${questionNo}:`, error);
+        return null;
     }
 }
 
@@ -138,7 +145,11 @@ export async function fetchQADetails(
     qaId: number,
     vesselInfoDbName: string,
     vesselInfoMongoUri: string,
-    collectionName: string = 'vesselinfos'
+    collectionName: string = 'vesselinfos',
+    vesselComponentsDbName?: string,
+    vesselComponentsMongoUri?: string,
+    siyaApiKey?: string,
+    siyaApiBaseUrl?: string
 ): Promise<any> {
     const mongoClient = new MongoClient(vesselInfoMongoUri);
     await mongoClient.connect();
@@ -167,7 +178,7 @@ export async function fetchQADetails(
             refreshDate: string | null;
             answer: string | null;
             detailedAnswer?: string | null;
-            Artifactlink?: string | null;
+            link?: string | null;
         }
 
         const mongoResult = await collection.findOne(query, { projection });
@@ -196,24 +207,25 @@ export async function fetchQADetails(
 
         // Process answer with component data if it exists
         if (res.answer) {
-            const vesselComponentsDbName = process.env.vesselComponentsDbName || vesselInfoDbName;
-            const vesselComponentsMongoUri = process.env.vesselComponentsMongoUri || vesselInfoMongoUri;
-            res.answer = await addComponentData(res.answer, imo, vesselComponentsDbName, vesselComponentsMongoUri);
+            const componentsDbName = vesselComponentsDbName || vesselInfoDbName;
+            const componentsMongoUri = vesselComponentsMongoUri || vesselInfoMongoUri;
+            res.answer = await addComponentData(res.answer, imo, componentsDbName, componentsMongoUri);
         }
 
-        // Get vessel QnA snapshot link
-        try {
-            res.Artifactlink = await getVesselQnASnapshot(imo, qaId.toString());
-        } catch (error) {
-            res.Artifactlink = null;
+        // Get vessel QnA snapshot link (only if API key is provided)
+        if (siyaApiKey) {
+            try {
+                res.link = await getVesselQnASnapshot(imo, qaId.toString(), siyaApiKey, siyaApiBaseUrl);
+            } catch (error) {
+                res.link = null;
+            }
+        } else {
+            res.link = null;
         }
 
         return res;
     } catch (error: any) {
-        return {
-            content: [{ type: "text", text: `Error in fetchQADetails: ${error.message}` }],
-            isError: true
-        };
+        throw new Error(`Error in fetchQADetails: ${error.message}`);
     } finally {
         await mongoClient.close();
     }
@@ -334,11 +346,12 @@ export async function getArtifact(toolName: string, link: string): Promise<any> 
   }
 }
 
-export async function getVesselImoListFromFleet(fleetImo: number): Promise<number[]> {
-    const dbName = process.env.GROUP_DETAILS_DB_NAME;
-    const mongoUri = process.env.GROUP_DETAILS_MONGO_URI;
-    const collectionName = "common_group_details";
-
+export async function getVesselImoListFromFleet(
+    fleetImo: number,
+    dbName: string,
+    mongoUri: string,
+    collectionName: string = "common_group_details"
+): Promise<number[]> {
     if (!dbName || !mongoUri || !collectionName) {
       return [];
     }
@@ -531,6 +544,7 @@ export async function processTypesenseResults(
 export async function exportDataForImoListGeneric(
     collectionName: string,
     imoList: number[],
+    typesenseConfig: TypesenseConfig,
     startDate?: string,
     endDate?: string,
     dateField?: string,
@@ -545,7 +559,7 @@ export async function exportDataForImoListGeneric(
             return []; // Return empty array if no valid IMOs
         }
 
-        const client = await getTypesenseClient();
+        const client = await getTypesenseClient(typesenseConfig);
         if ('isError' in client) {
             return [];
         }
@@ -602,4 +616,391 @@ export async function exportDataForImoListGeneric(
     } catch (error) {
         return [];
     }
+}
+
+// ============================================================================
+// MCP Response Helpers
+// ============================================================================
+
+/**
+ * MCP Protocol Error Response Helper
+ *
+ * Creates a properly formatted MCP error response with isError flag.
+ * According to MCP spec, tool errors should be returned with isError: true
+ * so that LLMs can see the error and self-correct.
+ */
+export interface MCPErrorResponse {
+  content: Array<{
+    type: 'text';
+    text: string;
+  }>;
+  isError: true;
+}
+
+export interface MCPSuccessResponse {
+  content: Array<{
+    type: 'text' | 'image' | 'audio';
+    text?: string;
+    data?: string;
+    mimeType?: string;
+  }>;
+}
+
+export type MCPResponse = MCPErrorResponse | MCPSuccessResponse;
+
+/**
+ * Create an MCP-compliant error response
+ */
+export function createErrorResponse(message: string): MCPErrorResponse {
+  return {
+    content: [{
+      type: 'text',
+      text: message
+    }],
+    isError: true
+  };
+}
+
+/**
+ * Create an MCP-compliant success response
+ * Note: isError defaults to false per MCP spec, so we don't need to set it explicitly
+ */
+export function createSuccessResponse(text: string): MCPSuccessResponse {
+  return {
+    content: [{
+      type: 'text',
+      text
+    }]
+  };
+}
+
+// ============================================================================
+// String Utility Functions
+// ============================================================================
+
+/**
+ * Sanitize query string by replacing special characters with spaces
+ */
+export function sanitizeQuery(query: string): string {
+  // Replace special characters with space
+  return query.replace(/[^a-zA-Z0-9\s]/g, ' ').trim();
+}
+
+/**
+ * Check if a field name is in camelCase format
+ */
+export function isCamelCase(fieldName: string): boolean {
+  // Ignore MongoDB operators (start with $) and _id field
+  if (fieldName.startsWith('$') || fieldName === '_id') {
+    return true;
+  }
+  // Check if contains underscore (snake_case) or starts with uppercase
+  return !fieldName.includes('_') && !/^[A-Z]/.test(fieldName);
+}
+
+/**
+ * Calculate Levenshtein distance between two strings
+ * Used for fuzzy string matching and suggestions
+ */
+export function levenshteinDistance(str1: string, str2: string): number {
+  const matrix: number[][] = [];
+
+  for (let i = 0; i <= str2.length; i++) {
+    matrix[i] = [i];
+  }
+
+  for (let j = 0; j <= str1.length; j++) {
+    matrix[0][j] = j;
+  }
+
+  for (let i = 1; i <= str2.length; i++) {
+    for (let j = 1; j <= str1.length; j++) {
+      if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1, // substitution
+          matrix[i][j - 1] + 1,     // insertion
+          matrix[i - 1][j] + 1      // deletion
+        );
+      }
+    }
+  }
+
+  return matrix[str2.length][str1.length];
+}
+
+/**
+ * Find similar field names using fuzzy matching
+ * Returns top 5 closest matches based on Levenshtein distance
+ */
+export function findSimilarFields(fieldName: string, validFields: string[], maxDistance: number = 3): string[] {
+  const similar: Array<{ field: string; distance: number }> = [];
+
+  for (const validField of validFields) {
+    const distance = levenshteinDistance(fieldName.toLowerCase(), validField.toLowerCase());
+    if (distance <= maxDistance) {
+      similar.push({ field: validField, distance });
+    }
+  }
+
+  // Sort by distance (closest first) and return field names
+  return similar
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, 5) // Return top 5 suggestions
+    .map(s => s.field);
+}
+
+// ============================================================================
+// Data Extraction and Validation Utilities
+// ============================================================================
+
+/**
+ * Extract all field names from a document (including nested fields)
+ * Useful for schema discovery and validation
+ */
+export function extractDocumentFields(doc: any, prefix: string = ''): Set<string> {
+  const fields = new Set<string>();
+
+  if (typeof doc !== 'object' || doc === null) {
+    return fields;
+  }
+
+  for (const [key, value] of Object.entries(doc)) {
+    const fieldPath = prefix ? `${prefix}.${key}` : key;
+    fields.add(fieldPath);
+
+    // For nested objects (but not arrays), recursively extract fields
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      const nestedFields = extractDocumentFields(value, fieldPath);
+      nestedFields.forEach(f => fields.add(f));
+    }
+  }
+
+  return fields;
+}
+
+/**
+ * Extract field names used in a MongoDB aggregation pipeline
+ * Helps validate field references and detect typos
+ */
+export function extractPipelineFields(pipeline: any[]): Set<string> {
+  const usedFields = new Set<string>();
+
+  // Query operators that should preserve parent $match context
+  const queryOperators = new Set(['$or', '$and', '$nor', '$not', '$in', '$nin', '$elemMatch']);
+
+  function extractFields(obj: any, parentOperator: string = '') {
+    // Handle string values (field references like "$fieldName")
+    if (typeof obj === 'string' && obj.startsWith('$') && !obj.startsWith('$$')) {
+      const fieldRef = obj.substring(1);
+      // Only validate if we're NOT in $project, or if it's a simple field (no dots)
+      // This avoids false positives from intermediate fields like "$_id.fleet" in $project
+      if (parentOperator !== '$project' || !fieldRef.includes('.')) {
+        usedFields.add(fieldRef);
+      }
+      return;
+    }
+
+    if (typeof obj !== 'object' || obj === null) {
+      return;
+    }
+
+    if (Array.isArray(obj)) {
+      obj.forEach(item => extractFields(item, parentOperator));
+      return;
+    }
+
+    for (const [key, value] of Object.entries(obj)) {
+      const isOperator = key.startsWith('$');
+
+      // Only validate field names in $match (where keys are input fields being queried)
+      // This avoids false positives from output fields in $group, $project, etc.
+      if (parentOperator === '$match' && !isOperator && key !== '_id') {
+        usedFields.add(key);
+      }
+
+      // Special handling for $lookup: localField and foreignField are field references
+      if (parentOperator === '$lookup' && (key === 'localField' || key === 'foreignField') && typeof value === 'string') {
+        usedFields.add(value);
+      }
+
+      // Recurse with context:
+      // - Query operators ($or, $and, etc.) preserve the parent context (e.g., $match)
+      // - Other operators become the new context
+      // - Non-operators keep the parent context
+      const isQueryOperator = isOperator && queryOperators.has(key);
+      const nextContext = isOperator ? (isQueryOperator ? parentOperator : key) : parentOperator;
+      extractFields(value, nextContext);
+    }
+  }
+
+  extractFields(pipeline);
+  return usedFields;
+}
+
+/**
+ * Check pipeline for non-camelCase field naming
+ * Returns array of fields that don't follow camelCase convention
+ */
+export function checkPipelineFieldNaming(pipeline: any[]): string[] {
+  const nonCamelCaseFields: Set<string> = new Set();
+
+  function extractFields(obj: any) {
+    if (typeof obj !== 'object' || obj === null) {
+      return;
+    }
+
+    if (Array.isArray(obj)) {
+      obj.forEach(item => extractFields(item));
+      return;
+    }
+
+    for (const [key, value] of Object.entries(obj)) {
+      // Check string values that reference fields (e.g., "$field_name")
+      if (typeof value === 'string' && value.startsWith('$')) {
+        const fieldName = value.substring(1);
+        if (!isCamelCase(fieldName)) {
+          nonCamelCaseFields.add(fieldName);
+        }
+      }
+
+      // Recursively check nested objects
+      extractFields(value);
+    }
+  }
+
+  extractFields(pipeline);
+  return Array.from(nonCamelCaseFields);
+}
+
+/**
+ * Artifact-related types and functions
+ */
+
+export interface TaskResult {
+  url?: string;
+  title?: string;
+  task?: string;
+  taskDate?: string;
+}
+
+export interface ArtifactData {
+  id: string;
+  parentTaskId: string;
+  timestamp: number;
+  agent: {
+    id: string;
+    name: string;
+    type: string;
+  };
+  messageType: string;
+  action: {
+    tool: string;
+    operation: string;
+    params: {
+      url: string;
+      pageTitle: string;
+      visual: {
+        icon: string;
+        color: string;
+      };
+      stream: {
+        type: string;
+        streamId: string;
+        target: string;
+      };
+    };
+  };
+  content: string;
+  artifacts: Array<{
+    id: string;
+    type: string;
+    content: {
+      url: string;
+      title: string;
+      screenshot: string;
+      textContent: string;
+      extractedInfo: any;
+    };
+    metadata: {
+      domainName: string;
+      visitTimestamp: number;
+      category: string;
+    };
+  }>;
+  status: string;
+}
+
+/**
+ * Generate list of artifacts from task results
+ */
+export async function getListOfArtifacts(functionName: string, results: TaskResult[]): Promise<any[]> {
+  const artifacts: any[] = [];
+
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    const url = result.url;
+    const casefile = result.title || result.task || 'Unknown Casefile';
+
+    if (url) {
+      const artifactData: ArtifactData = {
+        id: `msg_browser_ghi789${i}`,
+        parentTaskId: "task_7d8f9g",
+        timestamp: Math.floor(Date.now() / 1000),
+        agent: {
+          id: "agent_siya_browser",
+          name: "SIYA",
+          type: "qna"
+        },
+        messageType: "action",
+        action: {
+          tool: "browser",
+          operation: "browsing",
+          params: {
+            url: `Casefile: ${casefile}`,
+            pageTitle: `Tool response for ${functionName}`,
+            visual: {
+              icon: "browser",
+              color: "#2D8CFF"
+            },
+            stream: {
+              type: "vnc",
+              streamId: "stream_browser_1",
+              target: "browser"
+            }
+          }
+        },
+        content: `Viewed page: ${functionName}`,
+        artifacts: [{
+          id: "artifact_webpage_1746018877304_994",
+          type: "browser_view",
+          content: {
+            url: url,
+            title: functionName,
+            screenshot: "",
+            textContent: `Observed output of cmd \`${functionName}\` executed:`,
+            extractedInfo: {}
+          },
+          metadata: {
+            domainName: "example.com",
+            visitTimestamp: Date.now(),
+            category: "web_page"
+          }
+        }],
+        status: "completed"
+      };
+
+      const artifact = {
+        type: "text" as const,
+        text: JSON.stringify(artifactData, null, 2),
+        title: `Casefile: ${casefile}`,
+        format: "json"
+      };
+
+      artifacts.push(artifact);
+    }
+  }
+
+  return artifacts;
 }

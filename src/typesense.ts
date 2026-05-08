@@ -1,21 +1,25 @@
 import Typesense from "typesense";
 
-export async function getTypesenseClient(): Promise<Typesense.Client | { content: Array<{type: string, text: string}>, isError: true }> {
+export interface TypesenseConfig {
+  host: string;
+  port: number;
+  protocol: string;
+  apiKey: string;
+}
 
-   // Validate required environment variables
-   const host = process.env.TYPESENSE_HOST;
-   const port = process.env.TYPESENSE_PORT;
-   const protocol = process.env.TYPESENSE_PROTOCOL;
-   const apiKey = process.env.TYPESENSE_API_KEY;
+export async function getTypesenseClient(config: TypesenseConfig): Promise<Typesense.Client | { content: Array<{type: string, text: string}>, isError: true }> {
+
+   // Validate required parameters
+   const { host, port, protocol, apiKey } = config;
 
    if (!host || !port || !protocol || !apiKey) {
      return {
-       content: [{ type: "text", text: `Error in getTypesenseClient: Missing required Typesense environment variables` }],
+       content: [{ type: "text", text: `Error in getTypesenseClient: Missing required Typesense configuration parameters` }],
        isError: true
      };
    }
 
-   // Initialize Typesense client from scratch
+   // Initialize Typesense client
    const typesenseConfig = {
      nodes: [
        {
