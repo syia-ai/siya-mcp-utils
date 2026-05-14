@@ -377,6 +377,40 @@ export async function getVesselImoListFromFleet(
     }
   }
 
+export async function getVesselNameFromImo(
+  vesselImo: number,
+  dbName: string,
+  mongoUri: string,
+  collectionName: string = "common_vessel_details"
+): Promise<string | null> {
+  if (!dbName || !mongoUri || !collectionName) {
+    const missing = [];
+    if (!dbName) missing.push('dbName');
+    if (!mongoUri) missing.push('mongoUri');
+    throw new Error(`Database configuration missing. Required parameters: ${missing.join(', ')}`);
+  }
+
+  const mongoClient = new MongoClient(mongoUri);
+  await mongoClient.connect();
+
+  try {
+    const db = mongoClient.db(dbName);
+    const collection = db.collection(collectionName);
+
+    const vesselDoc = await collection.findOne({ imo: vesselImo });
+
+    if (vesselDoc && vesselDoc.vesselName) {
+      return vesselDoc.vesselName as string;
+    }
+
+    return null;
+  } catch (error) {
+    throw error;
+  } finally {
+    await mongoClient.close();
+  }
+}
+
 
 export function convertUnixDates(document: any): any {
   const result = { ...document };
