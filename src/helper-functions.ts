@@ -3,7 +3,13 @@ import { TextContent } from "@modelcontextprotocol/sdk/types.js";
 import { updateTypesenseFilterWithCompanyImos, isValidImoForCompany, isValidVesselImoForCompany, isValidFleetImoForCompany, filterImoListByCompany } from "./company-filtering.js";
 import { getTypesenseClient, type TypesenseConfig } from "./typesense.js";
 
-export async function getComponentData(componentId: string, vesselComponentsDbName: string, vesselComponentsMongoUri: string, collectionName: string = 'vesselinfocomponents'): Promise<string> {
+export async function getComponentData(
+    componentId: string,
+    vesselComponentsDbName: string,
+    vesselComponentsMongoUri: string,
+    collectionName: string = 'vesselinfocomponents',
+    showNestedTables: boolean = false
+): Promise<string> {
     const match = componentId.match(/^(\d+)_(\d+)_(\d+)$/);
     if (!match) {
         return `⚠️ Invalid component_id format: ${componentId}`;
@@ -40,6 +46,68 @@ export async function getComponentData(componentId: string, vesselComponentsDbNa
             return "No body data found in the table component";
         }
 
+        // Helper function to format a cell value
+        const formatCellValue = (cell: any): string => {
+            if (!cell) return '';
+            if (cell.value && cell.link) {
+                return `[${cell.value}](${cell.link})`;
+            }
+            if (cell.status !== undefined) {
+                return `${cell.status}`;
+            }
+            if (typeof cell === 'string' && cell.startsWith('<a href=')) {
+                const linkMatch = cell.match(/<a href="([^"]+)"[^>]*>([^<]+)<\/a>/);
+                if (linkMatch) {
+                    return `[${linkMatch[2]}](${linkMatch[1]})`;
+                }
+            }
+            if (cell instanceof Date && !isNaN(cell.getTime())) {
+                return cell.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' });
+            }
+            if (typeof cell === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(cell)) {
+                try {
+                    const date = new Date(cell);
+                    return date.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' });
+                } catch {
+                    return cell;
+                }
+            }
+            return String(cell);
+        };
+
+        // Helper function to format detailed section with parent row data and nested table
+        const formatDetailedSection = (row: any[], headers: string[], lineitemData: any, rowNumber: number): string => {
+            let sectionMd = `\n### Row ${rowNumber}\n\n`;
+
+            for (let i = 0; i < headers.length && i < row.length; i++) {
+                const cell = row[i];
+                if (cell && !cell.lineitem) {
+                    const value = formatCellValue(cell);
+                    if (value && value.trim()) {
+                        sectionMd += `- **${headers[i]}:** ${value}\n`;
+                    }
+                }
+            }
+
+            if (lineitemData && lineitemData.headers && lineitemData.body) {
+                sectionMd += "\n**Additional Details:**\n\n";
+                const nestedHeaders = lineitemData.headers.map((h: any) => h.headerName || h.name || h.field || 'Column');
+                sectionMd += "| " + nestedHeaders.join(" | ") + " |\n";
+                sectionMd += "| " + nestedHeaders.map(() => "---").join(" | ") + " |\n";
+
+                for (const nestedRow of lineitemData.body) {
+                    const nestedCells = lineitemData.headers.map((header: any) => {
+                        const field = header.field;
+                        const cellValue = nestedRow[field];
+                        return formatCellValue(cellValue);
+                    });
+                    sectionMd += "| " + nestedCells.join(" | ") + " |\n";
+                }
+            }
+
+            return sectionMd;
+        };
+
         // Extract headers excluding lineitem
         const headers = doc.data.headers
             .filter((h: any) => h && h.name !== "lineitem")
@@ -47,22 +115,56 @@ export async function getComponentData(componentId: string, vesselComponentsDbNa
 
         const rows = doc.data.body;
 
-        // Build markdown table
-        let md = "| " + headers.join(" | ") + " |\n";
-        md += "| " + headers.map(() => "---").join(" | ") + " |\n";
+        let md = "";
+        if (doc.data.heading) {
+            md += `## ${doc.data.heading}\n\n`;
+        }
 
-        for (const row of rows) {
-            const formattedRow = row
-                .filter((cell: any) => cell && !cell.lineitem) // Exclude lineitem and null cells
-                .map((cell: any) => {
-                    if (cell && cell.value && cell.link) {
-                        return `[${cell.value}](${cell.link})`;
-                    } else if (cell && cell.status && cell.color) {
-                        return cell.status;
+        if (showNestedTables) {
+            let hasNestedData = false;
+            for (const row of rows) {
+                for (const cell of row) {
+                    if (cell && cell.lineitem) {
+                        hasNestedData = true;
+                        break;
                     }
-                    return cell ? String(cell) : '';
-                });
-            md += "| " + formattedRow.join(" | ") + " |\n";
+                }
+                if (hasNestedData) break;
+            }
+
+            if (hasNestedData) {
+                for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+                    const row = rows[rowIndex];
+                    let lineitemData: any = null;
+                    for (const cell of row) {
+                        if (cell && cell.lineitem) {
+                            lineitemData = cell.lineitem;
+                            break;
+                        }
+                    }
+                    if (lineitemData) {
+                        md += formatDetailedSection(row, headers, lineitemData, rowIndex + 1);
+                    }
+                }
+            } else {
+                md += "| " + headers.join(" | ") + " |\n";
+                md += "| " + headers.map(() => "---").join(" | ") + " |\n";
+                for (const row of rows) {
+                    const formattedRow = row
+                        .filter((cell: any) => cell !== null && cell !== undefined && !(cell && cell.lineitem))
+                        .map((cell: any) => formatCellValue(cell));
+                    md += "| " + formattedRow.join(" | ") + " |\n";
+                }
+            }
+        } else {
+            md += "| " + headers.join(" | ") + " |\n";
+            md += "| " + headers.map(() => "---").join(" | ") + " |\n";
+            for (const row of rows) {
+                const formattedRow = row
+                    .filter((cell: any) => cell !== null && cell !== undefined && !(cell && cell.lineitem))
+                    .map((cell: any) => formatCellValue(cell));
+                md += "| " + formattedRow.join(" | ") + " |\n";
+            }
         }
 
         return md;
@@ -73,7 +175,7 @@ export async function getComponentData(componentId: string, vesselComponentsDbNa
     }
 }
 
-export async function addComponentData(answer: string, imo: string, vesselComponentsDbName: string, vesselComponentsMongoUri: string): Promise<string> {
+export async function addComponentData(answer: string, imo: string, vesselComponentsDbName: string, vesselComponentsMongoUri: string, showNestedTables: boolean = false): Promise<string> {
     const pattern = /https[^\/]+\/chat\/ag-grid-table\?component=(\d+_\d+)/g;
     const matches = Array.from(answer.matchAll(pattern));
 
@@ -81,7 +183,7 @@ export async function addComponentData(answer: string, imo: string, vesselCompon
     for (const match of matches) {
         const component = match[1];
         try {
-            const replacement = await getComponentData(`${component}_${imo}`, vesselComponentsDbName, vesselComponentsMongoUri, 'vesselinfocomponents');
+            const replacement = await getComponentData(`${component}_${imo}`, vesselComponentsDbName, vesselComponentsMongoUri, 'vesselinfocomponents', showNestedTables);
             result = result.replace(match[0], replacement);
         } catch (error) {
             // Silently continue on error
@@ -140,23 +242,60 @@ export async function getVesselQnASnapshot(
     }
 }
 
+export interface FetchQADetailsOptions {
+    vesselComponentsDbName?: string;
+    vesselComponentsMongoUri?: string;
+    siyaApiKey?: string;
+    siyaApiBaseUrl?: string;
+    showNestedTables?: boolean;
+}
+
 export async function fetchQADetails(
     imo: string,
     qaId: number,
     vesselInfoDbName: string,
     vesselInfoMongoUri: string,
-    collectionName: string = 'vesselinfos',
-    vesselComponentsDbName?: string,
-    vesselComponentsMongoUri?: string,
-    siyaApiKey?: string,
-    siyaApiBaseUrl?: string
+    collectionName?: string,
+    optionsOrVesselComponentsDbName?: FetchQADetailsOptions | string,
+    vesselComponentsMongoUriLegacy?: string,
+    siyaApiKeyLegacy?: string,
+    siyaApiBaseUrlLegacy?: string,
+    showNestedTablesLegacy?: boolean
 ): Promise<any> {
+    const finalCollectionName = collectionName || 'vesselinfos';
+
+    // Support both calling conventions:
+    // New: fetchQADetails(imo, qaId, dbName, mongoUri, collectionName, { options })
+    // Legacy: fetchQADetails(imo, qaId, dbName, mongoUri, collectionName, compDbName, compUri, apiKey, apiUrl, showNested)
+    let vesselComponentsDbName: string | undefined;
+    let vesselComponentsMongoUri: string | undefined;
+    let siyaApiKey: string | undefined;
+    let siyaApiBaseUrl: string | undefined;
+    let showNestedTables = false;
+
+    if (typeof optionsOrVesselComponentsDbName === 'object' && optionsOrVesselComponentsDbName !== null && optionsOrVesselComponentsDbName !== undefined) {
+        // New options object calling convention
+        const opts = optionsOrVesselComponentsDbName as FetchQADetailsOptions;
+        vesselComponentsDbName = opts.vesselComponentsDbName;
+        vesselComponentsMongoUri = opts.vesselComponentsMongoUri;
+        siyaApiKey = opts.siyaApiKey;
+        siyaApiBaseUrl = opts.siyaApiBaseUrl;
+        showNestedTables = opts.showNestedTables || false;
+    } else {
+        // Legacy positional calling convention
+        vesselComponentsDbName = optionsOrVesselComponentsDbName as string | undefined;
+        vesselComponentsMongoUri = vesselComponentsMongoUriLegacy;
+        siyaApiKey = siyaApiKeyLegacy;
+        siyaApiBaseUrl = siyaApiBaseUrlLegacy;
+        showNestedTables = showNestedTablesLegacy || false;
+    }
+
     const mongoClient = new MongoClient(vesselInfoMongoUri);
     await mongoClient.connect();
 
     try {
         const db = mongoClient.db(vesselInfoDbName);
-        const collection = db.collection(collectionName);
+        const collection = db.collection(finalCollectionName);
 
         const query = {
             'imo': parseInt(imo),
@@ -209,7 +348,7 @@ export async function fetchQADetails(
         if (res.answer) {
             const componentsDbName = vesselComponentsDbName || vesselInfoDbName;
             const componentsMongoUri = vesselComponentsMongoUri || vesselInfoMongoUri;
-            res.answer = await addComponentData(res.answer, imo, componentsDbName, componentsMongoUri);
+            res.answer = await addComponentData(res.answer, imo, componentsDbName, componentsMongoUri, showNestedTables);
         }
 
         // Get vessel QnA snapshot link (only if API key is provided)
@@ -240,7 +379,9 @@ export async function fetchQADetailsAndCreateResponse(
     linkHeader: string,
     vesselInfoDbName: string,
     vesselInfoMongoUri: string,
-    collectionName: string = 'vesselinfos'
+    collectionName: string = 'vesselinfos',
+    showNestedTables: boolean = false,
+    insightName?: string
 ): Promise<any> {
     if (!imo) {
         return {
@@ -251,12 +392,11 @@ export async function fetchQADetailsAndCreateResponse(
 
     try {
         // Fetch QA details
-        const result = await fetchQADetails(imo, questionNo, vesselInfoDbName, vesselInfoMongoUri, collectionName);
-        const link = result.Artifactlink;
-        const vesselName = result.vesselName;
+        const result = await fetchQADetails(imo, questionNo, vesselInfoDbName, vesselInfoMongoUri, collectionName, { showNestedTables } as FetchQADetailsOptions);
+        const link = result.link || result.Artifactlink;
 
         // Get artifact data
-        const artifactData = await getArtifact(functionName, link);
+        const artifactData = await getArtifact(functionName, link, insightName);
 
         // Create content responses with processed answer
         const detailedAnswerText = result.detailedAnswer ? `\n\n${result.detailedAnswer}` : "";
@@ -285,7 +425,7 @@ export async function fetchQADetailsAndCreateResponse(
 
 
 
-export async function getArtifact(toolName: string, link: string): Promise<any> {
+export async function getArtifact(toolName: string, link: string, insightName?: string): Promise<any> {
   try {
       const timestamp = Math.floor(Date.now() / 1000);
       const artifact = {
@@ -324,7 +464,7 @@ export async function getArtifact(toolName: string, link: string): Promise<any> 
                       url: link,
                       title: toolName,
                       screenshot: "",
-                      textContent: `Observed output of cmd \`${toolName}\` executed:`,
+                      textContent: `Observed output of cmd \`${insightName || toolName}\` executed:`,
                       extractedInfo: {}
                   },
                   metadata: {
@@ -412,31 +552,34 @@ export async function getVesselNameFromImo(
 }
 
 
-export function convertUnixDates(document: any): any {
+const DEFAULT_DATE_FIELDS = [
+    'purchaseRequisitionDate',
+    'purchaseOrderIssuedDate',
+    'orderReadinessDate',
+    'date',
+    'poDate',
+    'expenseDate',
+    'inspectionTargetDate',
+    'reportDate',
+    'closingDate',
+    'targetDate',
+    'nextDueDate',
+    'extendedDate',
+    'issueDate',
+    'extensionDate',
+    'expiryDate',
+    'windowStartDate',
+    'windowEndDate'
+];
+
+export function convertUnixDates(document: any, dateFields?: string[]): any {
   const result = { ...document };
+  const fields = dateFields || DEFAULT_DATE_FIELDS;
 
-  const dateFields = [
-      'purchaseRequisitionDate',
-      'purchaseOrderIssuedDate',
-      'orderReadinessDate',
-      'date',
-      'poDate',
-      'expenseDate',
-      "inspectionTargetDate",
-      "reportDate",
-      "closingDate",
-      "targetDate",
-      "nextDueDate",
-      "extendedDate"
-  ];
-
-  let convertedCount = 0;
-  for (const field of dateFields) {
+  for (const field of fields) {
       const value = result[field];
       if (typeof value === "number" && Number.isFinite(value)) {
-          const originalValue = value;
           result[field] = new Date(value * 1000).toISOString();
-          convertedCount++;
       }
   }
 
@@ -534,6 +677,7 @@ export async function processTypesenseResults(
 
       // Format results in the standard structure
       const formattedResults = {
+          recordsInResponse: documents.length,
           found: searchResult.found || 0,
           out_of: searchResult.out_of || 0,
           page: searchResult.page || 1,
@@ -567,10 +711,9 @@ export async function processTypesenseResults(
       return {
         content : [{
           type: "text",
-          text: `Error processing results: ${error.message}`,
-          title: "Error",
-          format: "json"
-        }]
+          text: `Error: ${error.message}`,
+        }],
+        isError: true
       };
   }
 }
@@ -1038,3 +1181,111 @@ export async function getListOfArtifacts(functionName: string, results: TaskResu
 
   return artifacts;
 }
+
+// ============================================================================
+// CSV Utility
+// ============================================================================
+
+/**
+ * Convert array of objects to CSV format with proper escaping
+ */
+export function convertToCSV(data: any[]): string {
+    if (!data.length) return "";
+
+    const headers = Object.keys(data[0]);
+
+    const escapeCSV = (value: any): string => {
+        const str = value != null ? String(value) : "";
+        const needsEscaping = /[",\n]/.test(str);
+        const escaped = str.replace(/"/g, '""');
+        return needsEscaping ? `"${escaped}"` : escaped;
+    };
+
+    const rows = data.map(doc =>
+        headers.map(header => escapeCSV(doc[header])).join(',')
+    );
+
+    return [headers.join(','), ...rows].join('\n');
+}
+
+// ============================================================================
+// User & Vessel Resource Helpers
+// ============================================================================
+
+/**
+ * Fetch user details from MongoDB by ObjectId
+ */
+export async function getUserDetails(
+    identifier: string,
+    mongoUri: string,
+    dbName: string,
+    collectionName: string = 'users'
+): Promise<any> {
+    const { ObjectId } = await import('mongodb');
+    try {
+        const mongoClient = await MongoClient.connect(mongoUri);
+        const db = mongoClient.db(dbName);
+        const collection = db.collection(collectionName);
+        const query = { _id: new ObjectId(identifier) };
+        const projection = { _id: 0, firstName: 1, lastName: 1, email: 1, phone: 1 };
+        const result = await collection.findOne(query, { projection });
+        await mongoClient.close();
+        return result || { error: "User Not Found" };
+    } catch (error) {
+        return { error: String(error) };
+    }
+}
+
+/**
+ * Fetch vessel manager details from MongoDB by IMO
+ */
+export async function getVesselManagers(
+    imo: string,
+    mongoUri: string,
+    dbName: string,
+    collectionName: string = 'fleet_distributions_overviews'
+): Promise<any> {
+    try {
+        const mongoClient = await MongoClient.connect(mongoUri);
+        const db = mongoClient.db(dbName);
+        const collection = db.collection(collectionName);
+
+        const result = await collection.findOne({ imo: parseInt(imo) });
+
+        await mongoClient.close();
+
+        if (result) {
+            const clean = (value: any): string => {
+                return (value === null || value === undefined ||
+                       (typeof value === 'number' && isNaN(value))) ? "" : String(value);
+            };
+
+            return {
+                TS: clean(result.technicalSuperintendent),
+                TM: clean(result.fleetManager),
+                TA: clean(result.technicalExecutive),
+                MM: clean(result.marineManager),
+                MS: clean(result.marineSuperintendent),
+            };
+        } else {
+            return {
+                TS: "",
+                TM: "",
+                TA: "",
+                MM: "",
+                MS: "",
+                error: `No vessel found for IMO: ${imo}`
+            };
+        }
+    } catch (error) {
+        return {
+            TS: "",
+            TM: "",
+            TA: "",
+            MM: "",
+            MS: "",
+            error: String(error)
+        };
+    }
+}
+
