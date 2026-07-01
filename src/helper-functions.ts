@@ -381,7 +381,8 @@ export async function fetchQADetailsAndCreateResponse(
     vesselInfoMongoUri: string,
     collectionName: string = 'vesselinfos',
     showNestedTables: boolean = false,
-    insightName?: string
+    insightName?: string,
+    options?: FetchQADetailsOptions
 ): Promise<any> {
     if (!imo) {
         return {
@@ -391,8 +392,12 @@ export async function fetchQADetailsAndCreateResponse(
     }
 
     try {
-        // Fetch QA details
-        const result = await fetchQADetails(imo, questionNo, vesselInfoDbName, vesselInfoMongoUri, collectionName, { showNestedTables } as FetchQADetailsOptions);
+        // Fetch QA details - merge showNestedTables with any additional options (siyaApiKey, siyaApiBaseUrl, etc.)
+        const fetchOptions: FetchQADetailsOptions = {
+            ...options,
+            showNestedTables
+        };
+        const result = await fetchQADetails(imo, questionNo, vesselInfoDbName, vesselInfoMongoUri, collectionName, fetchOptions);
         const link = result.link || result.Artifactlink;
 
         // Get artifact data
